@@ -37,7 +37,6 @@ RenderSystem::~RenderSystem()
 // =============================================================================
 bool RenderSystem::Init()
 {
-    printf("[RenderSystem] Baslatiliyor...\n");
 
     // DX9/DX11 otomatik tespit
     HMODULE hDX11 = GetModuleHandleA("d3d11.dll");
@@ -46,7 +45,6 @@ bool RenderSystem::Init()
     // DX11 varsa DX11 hook'la
     if (hDX11 != nullptr)
     {
-        printf("[RenderSystem] DX11 modu tespit edildi, Present hook kuruluyor...\n");
         m_bDX11Mode = true;
 
         // Gecici DX11 device + swap chain olustur
@@ -71,7 +69,6 @@ bool RenderSystem::Init()
 
         if (FAILED(hr) || !pTempSwapChain)
         {
-            printf("[RenderSystem] DX11 gecici device olusturulamadi (0x%08X), DX9 deneniyor...\n", hr);
             if (pTempContext) pTempContext->Release();
             if (pTempDevice) pTempDevice->Release();
             if (pTempSwapChain) pTempSwapChain->Release();
@@ -81,7 +78,6 @@ bool RenderSystem::Init()
         // vtable'dan Present adresini al
         DWORD* pVTable = *(DWORD**)pTempSwapChain;
         DWORD dwPresent = pVTable[DXGI_PRESENT_VTABLE_INDEX];
-        printf("[RenderSystem] DX11 Present adresi: 0x%08X\n", dwPresent);
 
         pTempContext->Release();
         pTempDevice->Release();
@@ -90,21 +86,17 @@ bool RenderSystem::Init()
         s_oPresent = (tPresent)DetourFunction((PBYTE)dwPresent, (PBYTE)hkPresent);
         if (s_oPresent)
         {
-            printf("[RenderSystem] DX11 Present hook kuruldu!\n");
             m_bInitialized = true;
             return true;
         }
-        printf("[RenderSystem] DX11 Present hook BASARISIZ, DX9 deneniyor...\n");
     }
 
 try_dx9:
     if (hDX9 == nullptr)
     {
-        printf("[RenderSystem] HATA: ne d3d9.dll ne d3d11.dll bulunamadi!\n");
         return false;
     }
 
-    printf("[RenderSystem] DX9 modu, EndScene hook kuruluyor...\n");
     m_bDX11Mode = false;
     m_bDX11Mode = false;
 
@@ -112,7 +104,6 @@ try_dx9:
     IDirect3D9* pD3D = Direct3DCreate9(D3D_SDK_VERSION);
     if (!pD3D)
     {
-        printf("[RenderSystem] HATA: Direct3DCreate9 basarisiz!\n");
         return false;
     }
 
@@ -134,7 +125,6 @@ try_dx9:
 
     if (FAILED(hr) || !pTempDevice)
     {
-        printf("[RenderSystem] HATA: Gecici D3D9 device olusturulamadi (0x%08X)\n", hr);
         pD3D->Release();
         return false;
     }
@@ -143,7 +133,6 @@ try_dx9:
     DWORD* pVTable = *(DWORD**)pTempDevice;
     DWORD dwEndScene = pVTable[D3D9_ENDSCENE_VTABLE_INDEX];
 
-    printf("[RenderSystem] EndScene adresi: 0x%08X (vtable[%d])\n", dwEndScene, D3D9_ENDSCENE_VTABLE_INDEX);
 
     // Gecici device'i serbest birak
     pTempDevice->Release();
@@ -153,11 +142,9 @@ try_dx9:
     s_oEndScene = (tEndScene)DetourFunction((PBYTE)dwEndScene, (PBYTE)hkEndScene);
     if (!s_oEndScene)
     {
-        printf("[RenderSystem] HATA: EndScene hook kurulamadi!\n");
         return false;
     }
 
-    printf("[RenderSystem] EndScene hook kuruldu! Orijinal: 0x%08X\n", (DWORD)s_oEndScene);
     m_bInitialized = true;
     return true;
 }
@@ -186,7 +173,6 @@ void RenderSystem::InitDX9(LPDIRECT3DDEVICE9 pDevice)
     static bool firstLog = true;
     if (firstLog)
     {
-        printf("[RenderSystem] DX9 device ayarlandi: 0x%08X\n", (DWORD)pDevice);
         firstLog = false;
     }
 }
@@ -379,7 +365,6 @@ void RenderSystem::InitDX11Device(IDXGISwapChain* pSwapChain)
         static bool firstLog = true;
         if (firstLog)
         {
-            printf("[RenderSystem] DX11 device ayarlandi\n");
             firstLog = false;
         }
     }
@@ -422,7 +407,6 @@ void RenderSystem::DrawTexture(int x, int y, int w, int h)
 void RenderSystem::OnDeviceLost()
 {
     m_bDeviceLost = true;
-    printf("[RenderSystem] Device lost!\n");
 }
 
 // =============================================================================
@@ -431,5 +415,4 @@ void RenderSystem::OnDeviceLost()
 void RenderSystem::OnDeviceReset()
 {
     m_bDeviceLost = false;
-    printf("[RenderSystem] Device reset — kaynaklar yeniden olusturuldu\n");
 }

@@ -77,7 +77,6 @@ void PearlEngine::Init()
     if (m_bInitialized)
         return;
 
-    printf("[PearlEngine] Initializing...\n");
 
     // Modul pointer'larini mevcut global instance'lara bagla
     m_PacketHandler = &g_PacketHandler;
@@ -90,20 +89,17 @@ void PearlEngine::Init()
     m_PlayerBase = new CPlayerBase();
 
     m_bInitialized = true;
-    printf("[PearlEngine] All modules linked.\n");
 
     // UITaskbar — oyuna giris sonrasi baslatilacak (ayri thread'de)
     // Not: Taskbar UI elemanlari oyuna giris yapildiktan sonra yuklenir
     // Bu yuzden 20sn bekleyip sonra baslatiriz
     CreateThread(NULL, 0, [](LPVOID lpParam) -> DWORD {
         PearlEngine* engine = reinterpret_cast<PearlEngine*>(lpParam);
-        printf("[UITaskbar] 20 saniye bekleniyor (oyuna gir)...\n");
         Sleep(20000);
 
         DWORD dlgBase = *(DWORD*)KO_PTR_DLG;
         if (dlgBase == 0)
         {
-            printf("[UITaskbar] UYARI: DLG base hala NULL, 30sn daha bekleniyor...\n");
             Sleep(30000);
         }
 
@@ -111,9 +107,7 @@ void PearlEngine::Init()
         engine->m_UITaskbarSub = new CUITaskbarSub();
 
         if (engine->m_UITaskbarMain->m_dVTableAddr && engine->m_UITaskbarSub->m_dVTableAddr)
-            printf("[UITaskbar] Main + Sub hook kuruldu\n");
-        else
-            printf("[UITaskbar] UYARI: Bazi hooklar kurulamadi (vTable 0)\n");
+        
 
         return 0;
     }, (LPVOID)this, 0, NULL);
@@ -122,11 +116,9 @@ void PearlEngine::Init()
     m_hEngineThread = CreateThread(NULL, 0, EngineMain, (LPVOID)this, 0, NULL);
     if (m_hEngineThread)
     {
-        printf("[PearlEngine] Engine thread started.\n");
     }
     else
     {
-        printf("[PearlEngine] ERROR: Engine thread could not be created!\n");
     }
 }
 
@@ -146,13 +138,12 @@ void PearlEngine::Update()
         updateCount++;
         if (updateCount % 100 == 1 && m_PlayerBase->m_iLevel > 0) // 100 * 100ms = 10sn
         {
-            printf("[Engine] %s LV%d HP:%d/%d MP:%d/%d X:%.0f Z:%.0f Gold:%u\n",
                 m_PlayerBase->m_strCharacterName.c_str(),
                 m_PlayerBase->m_iLevel,
                 m_PlayerBase->m_iHp, m_PlayerBase->m_iMaxHp,
                 m_PlayerBase->m_iMp, m_PlayerBase->m_iMaxMp,
                 m_PlayerBase->m_fX, m_PlayerBase->m_fZ,
-                m_PlayerBase->m_iGold);
+                m_PlayerBase->m_iGold;
         }
     }
 }
@@ -218,7 +209,6 @@ DWORD WINAPI PearlEngine::EngineMain(LPVOID lpParam)
     if (!engine)
         return 0;
 
-    printf("[PearlEngine] EngineMain loop started.\n");
 
     while (true)
     {

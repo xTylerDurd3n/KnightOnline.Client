@@ -1,0 +1,6 @@
+rmdir /s /q ".vs"
+rmdir /s /q "Debug"
+rmdir /s /q "x64"
+rmdir /s /q "WIN32"
+rmdir /s /q "Release"
+rmdir /s /q "Launcher"

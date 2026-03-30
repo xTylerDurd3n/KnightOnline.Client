@@ -73,7 +73,6 @@ void CGameHooks::InitAllHooks(HANDLE hProcess)
 {
     // --- EndGame Hook ---
     DetourFunction((PBYTE)KO_FNC_END_GAME, (PBYTE)hkEndGames_naked);
-    printf("[GameHooks] EndGame hook kuruldu (0x%08X)\n", KO_FNC_END_GAME);
 
     // --- Login Intro kapatma ---
     {
@@ -91,7 +90,6 @@ void CGameHooks::InitAllHooks(HANDLE hProcess)
 
     // --- Tick Hook ---
     s_TICK_ORG = (DWORD)DetourFunction((PBYTE)KO_GAME_TICK, (PBYTE)hkTick_naked);
-    printf("[GameHooks] Tick hook kuruldu (0x%08X), ORG=0x%08X\n", KO_GAME_TICK, s_TICK_ORG);
 
     // --- Kamera, Nesne Dongusu, Mouse hookları (TODO) ---
     InitCameraHook();
@@ -101,7 +99,6 @@ void CGameHooks::InitAllHooks(HANDLE hProcess)
     // --- UI ReceiveMessage hookları (TODO) ---
     InitUIReceiveMessageHooks();
 
-    printf("[GameHooks] Tum oyun hooklari kuruldu!\n");
 }
 
 // =============================================================================
@@ -114,7 +111,6 @@ void CGameHooks::InitCameraHook()
     // Pearl Guard 2369 referansi: hkCameraZoom
     // Adres bulundugunda:
     //   DetourFunction((PBYTE)KO_CAMERA_ZOOM_FUNC, (PBYTE)hkCameraZoom);
-    printf("[GameHooks] CameraHook: TODO - adres kesfedilmedi (25xx)\n");
 }
 
 // =============================================================================
@@ -128,7 +124,6 @@ void CGameHooks::InitObjectLoopHooks()
     // Adresler bulundugunda:
     //   DetourFunction((PBYTE)KO_OBJ_PLAYER_LOOP, (PBYTE)hkObjectPlayerLoop);
     //   DetourFunction((PBYTE)KO_OBJ_MOB_LOOP, (PBYTE)hkObjectMobLoop);
-    printf("[GameHooks] ObjectLoopHooks: TODO - adresler kesfedilmedi (25xx)\n");
 }
 
 // =============================================================================
@@ -141,7 +136,6 @@ void CGameHooks::InitMouseHook()
     // Pearl Guard 2369 referansi: hkMouseProc
     // Adres bulundugunda:
     //   DetourFunction((PBYTE)KO_MOUSE_PROC, (PBYTE)hkMouseProc);
-    printf("[GameHooks] MouseHook: TODO - adres kesfedilmedi (25xx)\n");
 }
 
 // =============================================================================
@@ -164,5 +158,4 @@ void CGameHooks::InitUIReceiveMessageHooks()
     //   DetourFunction((PBYTE)KO_UI_LOGIN_RECVMSG, (PBYTE)hkLoginReceiveMessage);
     //   DetourFunction((PBYTE)KO_UI_CHATBAR_RECVMSG, (PBYTE)hkChatBarReceiveMessage);
     //   DetourFunction((PBYTE)KO_UIF_FILE_LOAD, (PBYTE)hkUifFileLoad);
-    printf("[GameHooks] UIReceiveMessageHooks: TODO - adresler kesfedilmedi (25xx)\n");
 }

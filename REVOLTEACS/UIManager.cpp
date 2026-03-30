@@ -17,7 +17,6 @@ void CUIManager::Init()
     // GetChildByID hook'unu KURMA — 0x005E6E5A fonksiyon ortasi, trampoline bozuluyor
     // Loglama icin hook gerekmiyor, GetChildByID_Hook loglamayi zaten devre disi birakti
     // Dogrudan orijinal fonksiyonu cagiriyoruz
-    printf("[UIManager] GetChildByID hook ATLANDI — dogrudan fonksiyon cagirilacak @ 0x%08X\n", KO_GET_CHILD_BY_ID_FUNC);
     s_oGetChild = nullptr;
     s_bGetChildHooked = false;
 }
@@ -42,7 +41,6 @@ void __stdcall CUIManager::GetChildByID_Hook(const std::string& szString, DWORD 
         szString.find("exit") != std::string::npos ||
         szString.find("globalmap") != std::string::npos)
     {
-        printf("[UIManager] GetChildByID: \"%s\" (this: 0x%08X)\n", szString.c_str(), thisPtr);
     }
     __asm
     {
@@ -171,7 +169,6 @@ static void ProbeOffsets(DWORD uiObject)
     if (s_bProbed) return;
     s_bProbed = true;
 
-    printf("[GetChildByID] Offset probe basliyor (obj: 0x%08X)...\n", uiObject);
 
     // Bilinen: +0x020 = m_szFileName (UIF dosya adi)
     // m_szID bundan SONRA olmali (CN3UIBase, CN3BaseFileAccess'ten sonra)
@@ -179,19 +176,16 @@ static void ProbeOffsets(DWORD uiObject)
     char testBuf[64] = {0};
     if (ReadStdString(uiObject, 0x020, testBuf, 64))
     {
-        printf("[GetChildByID] +0x020 string: \"%s\"\n", testBuf);
     }
 
     // m_szID'yi bul — "base_" veya "btn_" gibi UI ID'leri icermeli
     // Genellikle m_szFileName'den sonra, +0x038 ile +0x080 arasi
     // Ama once tum std::string offset'lerini tarayalim
-    printf("[GetChildByID] std::string taramasi (0x000 - 0x100):\n");
     for (int off = 0; off < 0x100; off += 4)
     {
         char buf[64] = {0};
         if (ReadStdString(uiObject, off, buf, 64))
         {
-            printf("  +0x%03X: \"%s\"\n", off, buf);
         }
     }
 
@@ -200,7 +194,6 @@ static void ProbeOffsets(DWORD uiObject)
     // Sentinel node: { _Next, _Prev, _Myval(unused) }
     // _Next = ilk gercek eleman, _Prev = son gercek eleman
     // Bos liste: _Next == _Prev == _Myhead (sentinel kendine isaret eder)
-    printf("[GetChildByID] std::list taramasi (0x000 - 0x100):\n");
     for (int off = 0; off < 0x100; off += 4)
     {
         DWORD headPtr = 0;
@@ -224,7 +217,6 @@ static void ProbeOffsets(DWORD uiObject)
         // Bos liste kontrolu: sentinel kendine isaret eder
         if (sizeVal == 0 && nextPtr == headPtr && prevPtr == headPtr)
         {
-            printf("  +0x%03X: EMPTY list (head=0x%08X, size=0)\n", off, headPtr);
             continue;
         }
 
@@ -234,9 +226,6 @@ static void ProbeOffsets(DWORD uiObject)
             DWORD firstVal = 0;
             if (SafeRead4(nextPtr + 8, firstVal) && IsValidPtr(firstVal))
             {
-                printf("  +0x%03X: LIST (head=0x%08X, size=%d, first_child=0x%08X)\n",
-                    off, headPtr, sizeVal, firstVal);
-
                 // Bu child'in m_szID'sini okumaya calis
                 // Eger m_szID offset'ini henuz bilmiyorsak, child uzerinde de string taramasi yap
                 if (s_offID < 0)
@@ -253,7 +242,6 @@ static void ProbeOffsets(DWORD uiObject)
                                 strstr(idBuf, "str_") || strstr(idBuf, "list_") ||
                                 strstr(idBuf, "progress_") || strstr(idBuf, "scroll_"))
                             {
-                                printf("    -> child+0x%03X: ID=\"%s\" *** MUHTEMEL m_szID OFFSET ***\n", idOff, idBuf);
                                 if (s_offID < 0)
                                     s_offID = idOff;
                             }
@@ -272,14 +260,7 @@ static void ProbeOffsets(DWORD uiObject)
 
     if (s_offID >= 0 && s_offChildren >= 0)
     {
-        printf("[GetChildByID] PROBE BASARILI: m_szID=+0x%03X, m_Children=+0x%03X, strLayout=%d\n",
-            s_offID, s_offChildren, s_strLayout);
         s_bProbeOK = true;
-    }
-    else
-    {
-        printf("[GetChildByID] PROBE BASARISIZ: m_szID=%d, m_Children=%d\n",
-            s_offID, s_offChildren);
     }
 }
 
@@ -328,8 +309,6 @@ DWORD CUIManager::GetChildByID(DWORD pParent, const std::string& szID)
         {
             if (lstrcmpiA(childID, szID.c_str()) == 0)
             {
-                printf("[GetChildByID] BULUNDU: \"%s\" -> 0x%08X (parent: 0x%08X)\n",
-                    szID.c_str(), childPtr, pParent);
                 return childPtr;
             }
         }
@@ -359,7 +338,6 @@ void CUIManager::DumpChildren(DWORD pParent)
     DWORD sizeVal = 0;
     SafeRead4(pParent + s_offChildSize, sizeVal);
 
-    printf("[DumpChildren] parent=0x%08X, child_count=%d\n", pParent, sizeVal);
 
     DWORD currentNode = 0;
     if (!SafeRead4(headPtr, currentNode)) return;
@@ -378,7 +356,6 @@ void CUIManager::DumpChildren(DWORD pParent)
         ReadStdString(childPtr, s_offID, childID, 64);
         ReadStdString(childPtr, 0x020, childFile, 64);
 
-        printf("  [%d] 0x%08X ID=\"%s\" file=\"%s\"\n", count, childPtr, childID, childFile);
 
         DWORD nextNode = 0;
         if (!SafeRead4(currentNode, nextNode)) break;

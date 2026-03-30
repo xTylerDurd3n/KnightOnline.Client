@@ -38,18 +38,15 @@ CUITaskbarMain::CUITaskbarMain()
     DWORD dlgBase = *(DWORD*)KO_PTR_DLG;
     if (dlgBase == 0)
     {
-        printf("[UITaskbarMain] UYARI: KO_PTR_DLG NULL, hook atlaniyor\n");
         return;
     }
 
     m_dVTableAddr = *(DWORD*)(dlgBase + KO_OFF_DLG_TASKBAR_MAIN);
     if (m_dVTableAddr == 0)
     {
-        printf("[UITaskbarMain] UYARI: vTable adresi 0, hook atlaniyor (offset: 0x%03X)\n", KO_OFF_DLG_TASKBAR_MAIN);
         return;
     }
 
-    printf("[UITaskbarMain] vTable: 0x%08X (DLG+0x%03X)\n", m_dVTableAddr, KO_OFF_DLG_TASKBAR_MAIN);
 
     ParseUIElements();
     InitReceiveMessage();
@@ -78,7 +75,6 @@ void CUITaskbarMain::ParseUIElements()
     }
     else
     {
-        printf("[UITaskbarMain] UYARI: base_TaskBar bulunamadi\n");
     }
 
     // base_menu container
@@ -90,18 +86,13 @@ void CUITaskbarMain::ParseUIElements()
     }
     else
     {
-        printf("[UITaskbarMain] UYARI: base_menu bulunamadi\n");
     }
-
-    printf("[UITaskbarMain] ParseUIElements tamamlandi — btn_00:0x%08X btn_06:0x%08X\n",
-        m_btn00Stand, m_btn06Inventory);
 
     // btn_powerup TaskbarMain'de de olabilir — engelle
     DWORD btnPowerupMain = g_UIManager.GetChildByID(m_dVTableAddr, "btn_powerup");
     if (btnPowerupMain != 0)
     {
         RegisterButtonHandler(btnPowerupMain, []() -> bool {
-            printf("[UITaskbarMain] PUS (btn_powerup) engellendi\n");
             return true;
         });
     }
@@ -143,7 +134,6 @@ void CUITaskbarMain::InitReceiveMessage()
     DWORD ptrMsg = (*(DWORD*)m_dVTableAddr) + 0x7C;
     if (ptrMsg == 0x7C) // vTable[0] sifir ise
     {
-        printf("[UITaskbarMain] HATA: vTable[0] sifir, hook kurulamadi\n");
         return;
     }
 
@@ -151,14 +141,12 @@ void CUITaskbarMain::InitReceiveMessage()
     s_uiTaskbarMainVTable = m_dVTableAddr;
     s_uiTaskbarMainOrigFunc = *(DWORD*)ptrMsg;
 
-    printf("[UITaskbarMain] Hook oncesi: ptrMsg=0x%08X, *ptrMsg=0x%08X\n", ptrMsg, s_uiTaskbarMainOrigFunc);
 
     // VirtualProtect ile yazma izni al — vTable read-only olabilir
     DWORD oldProtect = 0;
     BOOL vpResult = VirtualProtect((LPVOID)ptrMsg, sizeof(DWORD), PAGE_EXECUTE_READWRITE, &oldProtect);
     if (!vpResult)
     {
-        printf("[UITaskbarMain] UYARI: VirtualProtect basarisiz (err: %d), dogrudan yazma deneniyor\n", GetLastError());
     }
 
     // Hook fonksiyonuyla degistir
@@ -171,13 +159,6 @@ void CUITaskbarMain::InitReceiveMessage()
         VirtualProtect((LPVOID)ptrMsg, sizeof(DWORD), oldProtect, &tmp);
     }
 
-    // Dogrulama — gercekten degisti mi?
-    DWORD verify = *(DWORD*)ptrMsg;
-    printf("[UITaskbarMain] Hook sonrasi: *ptrMsg=0x%08X (beklenen: 0x%08X) %s\n",
-        verify, (DWORD)UITaskbarMainReceiveMessage_Hook,
-        (verify == (DWORD)UITaskbarMainReceiveMessage_Hook) ? "OK" : "BASARISIZ");
-
-    printf("[UITaskbarMain] ReceiveMessage hook kuruldu (orig: 0x%08X)\n", s_uiTaskbarMainOrigFunc);
 }
 
 // =============================================================================
@@ -196,18 +177,15 @@ bool CUITaskbarMain::ReceiveMessage(DWORD* pSender, uint32_t dwMsg)
         extern bool ReadStdString(DWORD base, DWORD offset, char* outBuf, int maxLen);
         if (ReadStdString(senderAddr, 0x054, btnName, 64))
         {
-            printf("[TaskbarMain] CLICK: sender=0x%08X ID=\"%s\"\n", senderAddr, btnName);
 
             // String bazli engelleme — btn_powerup her zaman engelle
             if (lstrcmpiA(btnName, "btn_powerup") == 0)
             {
-                printf("[TaskbarMain] PUS (btn_powerup) engellendi\n");
                 return true;
             }
         }
         else
         {
-            printf("[TaskbarMain] CLICK: sender=0x%08X (ID okunamadi)\n", senderAddr);
         }
     }
 
@@ -235,11 +213,9 @@ void CUITaskbarMain::RegisterButtonHandler(DWORD btnPtr, std::function<bool()> h
 {
     if (btnPtr == 0)
     {
-        printf("[UITaskbarMain] RegisterButtonHandler: btnPtr 0, reddedildi\n");
         return;
     }
     m_handlers[btnPtr] = handler;
-    printf("[UITaskbarMain] Handler kayitlandi: btn 0x%08X\n", btnPtr);
 }
 
 // =============================================================================
@@ -253,18 +229,15 @@ CUITaskbarSub::CUITaskbarSub()
     DWORD dlgBase = *(DWORD*)KO_PTR_DLG;
     if (dlgBase == 0)
     {
-        printf("[UITaskbarSub] UYARI: KO_PTR_DLG NULL, hook atlaniyor\n");
         return;
     }
 
     m_dVTableAddr = *(DWORD*)(dlgBase + KO_OFF_DLG_TASKBAR_SUB);
     if (m_dVTableAddr == 0)
     {
-        printf("[UITaskbarSub] UYARI: vTable adresi 0, hook atlaniyor (offset: 0x%03X)\n", KO_OFF_DLG_TASKBAR_SUB);
         return;
     }
 
-    printf("[UITaskbarSub] vTable: 0x%08X\n", m_dVTableAddr);
     ParseUIElements();
     InitReceiveMessage();
 
@@ -272,7 +245,6 @@ CUITaskbarSub::CUITaskbarSub()
     if (m_btnPowerUPStore != 0)
     {
         RegisterButtonHandler(m_btnPowerUPStore, []() -> bool {
-            printf("[UITaskbarSub] PUS (btn_powerup) engellendi\n");
             return true; // Orijinal davranis engellendi
         });
     }
@@ -288,7 +260,6 @@ void CUITaskbarSub::ParseUIElements()
     if (m_dVTableAddr == 0) return;
 
     // Once tum child'lari listele — PUS butonunun gercek ID'sini bulmak icin
-    printf("[UITaskbarSub] Tum child'lar listeleniyor...\n");
     g_UIManager.DumpChildren(m_dVTableAddr);
 
     m_btnPowerUPStore = g_UIManager.GetChildByID(m_dVTableAddr, "btns_pus");
@@ -303,14 +274,6 @@ void CUITaskbarSub::ParseUIElements()
     m_btnParty        = g_UIManager.GetChildByID(m_dVTableAddr, "btn_party");
     m_btnExit         = g_UIManager.GetChildByID(m_dVTableAddr, "btn_exit");
 
-    if (m_btnPowerUPStore == 0) printf("[UITaskbarSub] UYARI: btns_pus bulunamadi (tum alternatifler denendi)\n");
-    if (m_btnHotkey == 0)       printf("[UITaskbarSub] UYARI: btn_hotkey bulunamadi\n");
-    if (m_btnGlobalMap == 0)    printf("[UITaskbarSub] UYARI: btn_globalmap bulunamadi\n");
-    if (m_btnParty == 0)        printf("[UITaskbarSub] UYARI: btn_party bulunamadi\n");
-    if (m_btnExit == 0)         printf("[UITaskbarSub] UYARI: btn_exit bulunamadi\n");
-
-    printf("[UITaskbarSub] ParseUIElements tamamlandi — PUS:0x%08X Hotkey:0x%08X\n",
-        m_btnPowerUPStore, m_btnHotkey);
 }
 
 // =============================================================================
@@ -345,21 +308,18 @@ void CUITaskbarSub::InitReceiveMessage()
     DWORD ptrMsg = (*(DWORD*)m_dVTableAddr) + 0x7C;
     if (ptrMsg == 0x7C)
     {
-        printf("[UITaskbarSub] HATA: vTable[0] sifir, hook kurulamadi\n");
         return;
     }
 
     s_uiTaskbarSubVTable = m_dVTableAddr;
     s_uiTaskbarSubOrigFunc = *(DWORD*)ptrMsg;
 
-    printf("[UITaskbarSub] Hook oncesi: ptrMsg=0x%08X, *ptrMsg=0x%08X\n", ptrMsg, s_uiTaskbarSubOrigFunc);
 
     // VirtualProtect ile yazma izni al
     DWORD oldProtect = 0;
     BOOL vpResult = VirtualProtect((LPVOID)ptrMsg, sizeof(DWORD), PAGE_EXECUTE_READWRITE, &oldProtect);
     if (!vpResult)
     {
-        printf("[UITaskbarSub] UYARI: VirtualProtect basarisiz (err: %d)\n", GetLastError());
     }
 
     *(DWORD*)ptrMsg = (DWORD)UITaskbarSubReceiveMessage_Hook;
@@ -370,13 +330,6 @@ void CUITaskbarSub::InitReceiveMessage()
         VirtualProtect((LPVOID)ptrMsg, sizeof(DWORD), oldProtect, &tmp);
     }
 
-    // Dogrulama
-    DWORD verify = *(DWORD*)ptrMsg;
-    printf("[UITaskbarSub] Hook sonrasi: *ptrMsg=0x%08X (beklenen: 0x%08X) %s\n",
-        verify, (DWORD)UITaskbarSubReceiveMessage_Hook,
-        (verify == (DWORD)UITaskbarSubReceiveMessage_Hook) ? "OK" : "BASARISIZ");
-
-    printf("[UITaskbarSub] ReceiveMessage hook kuruldu (orig: 0x%08X)\n", s_uiTaskbarSubOrigFunc);
 }
 
 // =============================================================================
@@ -395,18 +348,15 @@ bool CUITaskbarSub::ReceiveMessage(DWORD* pSender, uint32_t dwMsg)
         extern bool ReadStdString(DWORD base, DWORD offset, char* outBuf, int maxLen);
         if (ReadStdString(senderAddr, 0x054, btnName, 64))
         {
-            printf("[TaskbarSub] CLICK: sender=0x%08X ID=\"%s\"\n", senderAddr, btnName);
 
             // String bazli engelleme — btn_powerup her zaman engelle
             if (lstrcmpiA(btnName, "btn_powerup") == 0)
             {
-                printf("[TaskbarSub] PUS (btn_powerup) engellendi\n");
                 return true;
             }
         }
         else
         {
-            printf("[TaskbarSub] CLICK: sender=0x%08X (ID okunamadi)\n", senderAddr);
         }
     }
 
@@ -434,9 +384,7 @@ void CUITaskbarSub::RegisterButtonHandler(DWORD btnPtr, std::function<bool()> ha
 {
     if (btnPtr == 0)
     {
-        printf("[UITaskbarSub] RegisterButtonHandler: btnPtr 0, reddedildi\n");
         return;
     }
     m_handlers[btnPtr] = handler;
-    printf("[UITaskbarSub] Handler kayitlandi: btn 0x%08X\n", btnPtr);
 }

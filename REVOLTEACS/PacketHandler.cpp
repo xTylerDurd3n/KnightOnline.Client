@@ -27,11 +27,9 @@ void PacketHandler::InitSendHook()
 
     if (s_oSend)
     {
-        printf("[PacketHandler] Send hook basarili @ 0x%08X\n", KO_SND_FNC);
     }
     else
     {
-        printf("[PacketHandler] Send hook BASARISIZ @ 0x%08X\n", KO_SND_FNC);
     }
 }
 
@@ -41,7 +39,6 @@ void PacketHandler::InitRecvHook()
 
     if (KO_RECV_FNC == 0)
     {
-        printf("[PacketHandler] Recv hook ATLANDI - recv paket bazli yapilacak\n");
         return;
     }
 
@@ -51,11 +48,9 @@ void PacketHandler::InitRecvHook()
 
     if (s_oRecv)
     {
-        printf("[PacketHandler] Recv hook basarili @ 0x%08X\n", KO_RECV_FNC);
     }
     else
     {
-        printf("[PacketHandler] Recv hook BASARISIZ @ 0x%08X - oyun calismaya devam ediyor\n", KO_RECV_FNC);
     }
 }
 
@@ -100,12 +95,10 @@ int __fastcall PacketHandler::hkSend(DWORD thisPtr, DWORD edx, BYTE* pBuf, int i
         uint8 opcode = pBuf[0];
 
         // Opcode/uzunluk loglama
-        printf("[SEND] Opcode: 0x%02X, Len: %d, RetAddr: 0x%08X\n", opcode, iLen, retAddr);
 
         // Engellenen opcode kontrolu
         if (g_pPacketHandler && g_pPacketHandler->IsOpcodeBlocked(opcode))
         {
-            printf("[SEND] Opcode 0x%02X ENGELLENDI\n", opcode);
             return 0;
         }
     }
@@ -127,7 +120,6 @@ int __fastcall PacketHandler::hkRecv(DWORD thisPtr, DWORD edx, BYTE* pBuf, int i
     static int recvCount = 0;
     recvCount++;
     if (recvCount <= 5) {
-        printf("[RECV] Handler cagirildi (thisPtr: 0x%08X, count: %d)\n", thisPtr, recvCount);
     }
 
     return result;
@@ -138,13 +130,11 @@ int __fastcall PacketHandler::hkRecv(DWORD thisPtr, DWORD edx, BYTE* pBuf, int i
 void PacketHandler::AddBlockedOpcode(uint8 opcode)
 {
     m_blockedOpcodes.insert(opcode);
-    printf("[PacketHandler] Opcode 0x%02X engellendi\n", opcode);
 }
 
 void PacketHandler::RemoveBlockedOpcode(uint8 opcode)
 {
     m_blockedOpcodes.erase(opcode);
-    printf("[PacketHandler] Opcode 0x%02X engeli kaldirildi\n", opcode);
 }
 
 bool PacketHandler::IsOpcodeBlocked(uint8 opcode) const
@@ -159,12 +149,10 @@ void PacketHandler::RegisterHandler(uint8 opcode, PacketHandlerFunc func)
     if (func)
     {
         m_recvHandlers[opcode] = func;
-        printf("[PacketHandler] Handler kayitlandi: opcode 0x%02X\n", opcode);
     }
 }
 
 void PacketHandler::UnregisterHandler(uint8 opcode)
 {
     m_recvHandlers.erase(opcode);
-    printf("[PacketHandler] Handler kaldirildi: opcode 0x%02X\n", opcode);
 }

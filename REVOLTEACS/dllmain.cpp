@@ -1,6 +1,6 @@
 // dllmain.cpp : Defines the entry point for the DLL application.
 #include "pch.h"
-#define CONSOLE_MODE 1 // 0 OLUNCA CONSOL KAPALI - 1 OLUNCA KONSOL ACIK OLUYOR.
+#define CONSOLE_MODE 0 // 0 OLUNCA CONSOL KAPALI - 1 OLUNCA KONSOL ACIK OLUYOR.
 std::unordered_map<std::string, DWORD> m_mapAddress;
 
 // --- Packet Hook --- PacketHandler sinifina tasindi
@@ -46,10 +46,7 @@ DWORD WINAPI RandomYazdir(LPVOID lpParam) {
 		// Belirtilen adrese rastgele say�y� yazd�r.
 		*(unsigned int*)adres = randomSayi;
 
-		// Adresi ve i�eri�i hexadecimal olarak yazd�r.
-		std::cout << "Adres: 0x" << std::hex << std::setw(8) << std::setfill('0') << adres << ", Icerik: 0x" << std::setw(8) << std::setfill('0') << randomSayi << "\n" << std::endl;
-
-		// 10 saniye beklet.
+			// 10 saniye beklet.
 		Sleep(10000);
 	}
 	return 0;
@@ -89,7 +86,7 @@ void REVOLTEACSRemapProcess(HANDLE hProcess)
 
 	/*00FC7644 | 4B | dec ebx |*/
 	char buff[50];
-	sprintf_s(buff, ("OPSGUARD[%d]"), GetCurrentProcessId());
+	sprintf_s(buff, ("REVOLTEACS[%d]"), GetCurrentProcessId());
 	WriteProcessMemory(hProcess, (LPVOID*)0x00FCB66C, &buff, sizeof(buff), 0);
 
 	// Adresler.
@@ -101,7 +98,6 @@ void REVOLTEACSRemapProcess(HANDLE hProcess)
 		HANDLE hThread = CreateThread(NULL, 0, RandomYazdir, (LPVOID)adresler[i], 0, NULL);
 		if (hThread == NULL)
 		{
-			std::cerr << ("Thread olu�turulamad� ! Hata kodu : ") << GetLastError() << std::endl;
 			return;
 		}
 		CloseHandle(hThread);
@@ -300,24 +296,17 @@ void REVOLTEACSRemapProcess(HANDLE hProcess)
 // =============================================================================
 DWORD WINAPI OffsetVerifyThread(LPVOID lpParam)
 {
-	printf("\n[OFFSET] 15 saniye bekleniyor (oyuna gir)...\n");
 	Sleep(15000);
 
-	printf("\n========== OFFSET DOGRULAMA ==========\n");
 
 	DWORD chrBase = *(DWORD*)KO_PTR_CHR;
-	printf("[PTR] KO_PTR_CHR (0x%08X) -> 0x%08X\n", KO_PTR_CHR, chrBase);
 
 	if (chrBase == 0) {
-		printf("[!] KO_PTR_CHR NULL - oyuna henuz girilmemis!\n");
-		printf("[!] Oyuna gir, 30 sn sonra tekrar denenecek...\n");
 		Sleep(30000);
 		chrBase = *(DWORD*)KO_PTR_CHR;
-		printf("[PTR] KO_PTR_CHR -> 0x%08X\n", chrBase);
 	}
 
 	if (chrBase == 0) {
-		printf("[!] KO_PTR_CHR hala NULL, offset dogrulama iptal.\n");
 		return 0;
 	}
 
@@ -325,93 +314,64 @@ DWORD WINAPI OffsetVerifyThread(LPVOID lpParam)
 	DWORD pktBase = *(DWORD*)KO_PTR_PKT;
 	DWORD fldbBase = *(DWORD*)KO_FLDB;
 
-	printf("[PTR] KO_PTR_DLG (0x%08X) -> 0x%08X\n", KO_PTR_DLG, dlgBase);
-	printf("[PTR] KO_PTR_PKT (0x%08X) -> 0x%08X\n", KO_PTR_PKT, pktBase);
-	printf("[PTR] KO_FLDB    (0x%08X) -> 0x%08X\n", KO_FLDB, fldbBase);
 
-	printf("\n--- Oyuncu Verileri (chrBase: 0x%08X) ---\n", chrBase);
 
 	// ID
 	uint16_t id = *(uint16_t*)(chrBase + KO_OFF_ID);
-	printf("[OFF] ID       (+0x%03X) = %d\n", KO_OFF_ID, id);
 
 	// Name - string pointer okuma
 	char* namePtr = (char*)(chrBase + KO_OFF_NAME);
-	printf("[OFF] NAME     (+0x%03X) = %.20s\n", KO_OFF_NAME, namePtr);
 
 	// Nation
 	uint8_t nation = *(uint8_t*)(chrBase + KO_OFF_NATION);
-	printf("[OFF] NATION   (+0x%03X) = %d (1=Karus, 2=ElMorad)\n", KO_OFF_NATION, nation);
 
 	// Class
 	short cls = *(short*)(chrBase + KO_OFF_CLASS);
-	printf("[OFF] CLASS    (+0x%03X) = %d\n", KO_OFF_CLASS, cls);
 
 	// Level
 	uint8_t level = *(uint8_t*)(chrBase + KO_OFF_LEVEL);
-	printf("[OFF] LEVEL    (+0x%03X) = %d\n", KO_OFF_LEVEL, level);
 
 	// HP / MaxHP
 	int32_t hp = *(int32_t*)(chrBase + KO_OFF_HP);
 	int32_t maxhp = *(int32_t*)(chrBase + KO_OFF_MAXHP);
-	printf("[OFF] HP       (+0x%03X) = %d\n", KO_OFF_HP, hp);
-	printf("[OFF] MAXHP    (+0x%03X) = %d\n", KO_OFF_MAXHP, maxhp);
 
 	// MP / MaxMP
 	int32_t mp = *(int32_t*)(chrBase + KO_OFF_MP);
 	int32_t maxmp = *(int32_t*)(chrBase + KO_OFF_MAXMP);
-	printf("[OFF] MP       (+0x%03X) = %d\n", KO_OFF_MP, mp);
-	printf("[OFF] MAXMP    (+0x%03X) = %d\n", KO_OFF_MAXMP, maxmp);
 
 	// Attack
 	uint16_t attack = *(uint16_t*)(chrBase + KO_OFF_ATTACK);
-	printf("[OFF] ATTACK   (+0x%03X) = %d\n", KO_OFF_ATTACK, attack);
 
 	// Gold
 	uint32_t gold = *(uint32_t*)(chrBase + KO_OFF_GOLD);
-	printf("[OFF] GOLD     (+0x%03X) = %u\n", KO_OFF_GOLD, gold);
 
 	// Position
 	float posX = *(float*)(chrBase + KO_OFF_X);
 	float posY = *(float*)(chrBase + KO_OFF_Y);
 	float posZ = *(float*)(chrBase + KO_OFF_Z);
-	printf("[OFF] POS X    (+0x%03X) = %.2f\n", KO_OFF_X, posX);
-	printf("[OFF] POS Y    (+0x%03X) = %.2f\n", KO_OFF_Y, posY);
-	printf("[OFF] POS Z    (+0x%03X) = %.2f\n", KO_OFF_Z, posZ);
 
 	// Target
 	uint16_t target = *(uint16_t*)(chrBase + KO_OFF_TARGET);
-	printf("[OFF] TARGET   (+0x%03X) = %d\n", KO_OFF_TARGET, target);
 
-	printf("\n========== DOGRULAMA TAMAMLANDI ==========\n");
-	printf("Yukaridaki degerleri oyundaki degerlerle karsilastir!\n");
-	printf("Yanlis olan offsetler framework.h'de duzeltilecek.\n\n");
 
 	// --- OFFSET SCANNER ---
 	// Bilinen degerleri bellekte ara
-	printf("\n========== OFFSET SCANNER ==========\n");
-	printf("chrBase etrafinda bilinen degerleri ariyorum...\n\n");
 
 	// HP arama (uint16 olarak)
-	printf("--- uint16 olarak HP (4807 = 0x12C7) araniyor ---\n");
 	for (int off = 0; off < 0x1500; off += 2) {
 		uint16_t val = *(uint16_t*)(chrBase + off);
 		if (val == 4807) {
-			printf("  [BULUNDU] HP? offset +0x%03X = %d\n", off, val);
 		}
 	}
 
 	// HP arama (uint32 olarak)
-	printf("--- uint32 olarak HP araniyor ---\n");
 	for (int off = 0; off < 0x1500; off += 4) {
 		uint32_t val = *(uint32_t*)(chrBase + off);
 		if (val == 4807) {
-			printf("  [BULUNDU] HP? offset +0x%03X = %d\n", off, val);
 		}
 	}
 
 	// Level arama - oyundaki seviyeni yaz
-	printf("--- Level araniyor (1-83 arasi tum degerler) ---\n");
 	for (int off = 0x600; off < 0xD00; off += 1) {
 		uint8_t val = *(uint8_t*)(chrBase + off);
 		// Sadece makul seviye degerleri (60-83 arasi, yuksek seviye karakterler icin)
@@ -420,13 +380,11 @@ DWORD WINAPI OffsetVerifyThread(LPVOID lpParam)
 			uint8_t prev = *(uint8_t*)(chrBase + off - 1);
 			uint8_t next = *(uint8_t*)(chrBase + off + 1);
 			if (prev < 200 && next < 200) {
-				printf("  [ADAY] Level? offset +0x%03X = %d\n", off, val);
 			}
 		}
 	}
 
 	// String arama - karakter adi
-	printf("--- String araniyor (ilk 20 karakter gosteriliyor) ---\n");
 	for (int off = 0x600; off < 0xD00; off += 4) {
 		char* ptr = (char*)(chrBase + off);
 		// Okunabilir ASCII mi kontrol et
@@ -438,12 +396,10 @@ DWORD WINAPI OffsetVerifyThread(LPVOID lpParam)
 			len = i + 1;
 		}
 		if (readable && len >= 3 && len <= 16) {
-			printf("  [STRING] offset +0x%03X = \"%.16s\" (len=%d)\n", off, ptr, len);
 		}
 	}
 
 	// Nation arama (1 veya 2)
-	printf("--- Nation araniyor (1=Karus, 2=ElMorad) ---\n");
 	for (int off = 0x600; off < 0xD00; off += 1) {
 		uint8_t val = *(uint8_t*)(chrBase + off);
 		if (val == 1 || val == 2) {
@@ -451,15 +407,11 @@ DWORD WINAPI OffsetVerifyThread(LPVOID lpParam)
 			for (int d = -16; d <= 16; d += 4) {
 				short cls2 = *(short*)(chrBase + off + d);
 				if (cls2 >= 1 && cls2 <= 15 && d != 0) {
-					printf("  [ADAY] Nation? +0x%03X=%d, Class? +0x%03X=%d\n",
-						off, val, off + d, cls2);
 				}
 			}
 		}
 	}
 
-	printf("\n========== SCANNER TAMAMLANDI ==========\n");
-	printf("Sonuclari kontrol et ve framework.h'yi guncelle!\n\n");
 
 	return 0;
 }
@@ -476,7 +428,6 @@ void REVOLTEACSHook(HANDLE hProcess)
 	g_PacketHandler.InitSendHook();
 	g_PacketHandler.InitRecvHook();
 
-	printf("[+] All hooks installed.\n");
 
 	// --- RenderSystem — DX9 EndScene hook (ayri thread'de) ---
 	CreateThread(NULL, 0, [](LPVOID) -> DWORD {
@@ -489,8 +440,6 @@ void REVOLTEACSHook(HANDLE hProcess)
 	Engine = new PearlEngine();
 	Engine->Init();
 
-	// --- Offset Dogrulama Thread ---
-	CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)OffsetVerifyThread, NULL, 0, NULL);
 }
 void ExitSystem()
 {
@@ -503,7 +452,7 @@ void REVOLTEACSRemap()
 {
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, GetCurrentProcessId());
     if (hProcess == NULL) {
-        MessageBoxA(NULL, "OPSGUARD Image Map ReadWrite Error\n", "OPSGUARD Security System", 0);
+        MessageBoxA(NULL, "REVOLTEACS Image Map ReadWrite Error\n", "REVOLTEACS Security System", 0);
         ExitSystem();
     }
     RemapArrayInsert("KO_PATCH_ADDRESS1", 0x00400000);
@@ -518,16 +467,10 @@ void REVOLTEACSRemap()
 
 void REVOLTEACSLoad()
 {
-#if CONSOLE_MODE 1
+#if CONSOLE_MODE
     AllocConsole();
     freopen(xorstr("CONOUT$"), xorstr("w"), stdout);
 #endif
-
-	// packet_tool.dll varsa yukle
-	HMODULE hPacketTool = LoadLibraryA("packet_tool.dll");
-	if (hPacketTool) {
-		printf("[+] packet_tool.dll yuklendi!\n");
-	}
 
 	REVOLTEACSRemap();
 }

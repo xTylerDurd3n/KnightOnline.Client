@@ -24,7 +24,7 @@
     <ProjectGuid>{6eeaf37e-5817-4217-af87-2991c5c63d42}</ProjectGuid>
     <RootNamespace>REVOLTEACS</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ProjectName>OPSGUARD</ProjectName>
+    <ProjectName>REVOLTEACS</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
