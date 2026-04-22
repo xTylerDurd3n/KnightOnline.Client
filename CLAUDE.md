@@ -8,7 +8,7 @@ REVOLTEACS is a DLL injection framework for the KnightOnline v2524-v25xx game cl
 **Output:** DynamicLibrary (DLL)
 **Target:** Windows x86/x64
 
----
+---"
 
 ## Project Structure
 
