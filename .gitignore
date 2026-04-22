@@ -30,8 +30,9 @@ x64/
 *.recipe
 **/FileListAbsolute.txt
 
-# Local configuration
-.claude/
+# Local configuration — .claude/* ile icerik ignore edilir ama skills/ hariç tutulur
+.claude/*
+!.claude/skills
 imgui.ini
 *.klg
 *.ksc
