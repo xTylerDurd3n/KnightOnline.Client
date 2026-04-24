@@ -2,10 +2,13 @@
 #include "PacketHandler.h"
 #include "Packet.h"
 
+extern void RevLog(const char* fmt, ...);
+
 // Static member tanimlari
 tSend PacketHandler::s_oSend = nullptr;
 tRecv PacketHandler::s_oRecv = nullptr;
 DWORD PacketHandler::s_lastReturnAddress = 0;
+uint16_t PacketHandler::s_clientVersion = 0;
 
 // Global PacketHandler instance pointer (hkSend/hkRecv callback'inden erismek icin)
 static PacketHandler* g_pPacketHandler = nullptr;
@@ -94,11 +97,23 @@ int __fastcall PacketHandler::hkSend(DWORD thisPtr, DWORD edx, BYTE* pBuf, int i
     {
         uint8 opcode = pBuf[0];
 
-        // Opcode/uzunluk loglama
+        // Version check (0x2B): client'in kendi version'ini kaydet
+        if (opcode == 0x2B && iLen >= 3)
+        {
+            s_clientVersion = *(uint16_t*)(&pBuf[1]);
+            RevLog("VER_SEND: client version=%u (0x%04X)", s_clientVersion, s_clientVersion);
+        }
 
-        // Engellenen opcode kontrolu
+        // Hex dump (max 16 byte)
+        char hex[64] = {};
+        int dumpLen = iLen < 16 ? iLen : 16;
+        for (int i = 0; i < dumpLen; i++)
+            sprintf(hex + i * 3, "%02X ", pBuf[i]);
+        RevLog("SEND op=0x%02X len=%d [%s]", opcode, iLen, hex);
+
         if (g_pPacketHandler && g_pPacketHandler->IsOpcodeBlocked(opcode))
         {
+            RevLog("SEND BLOCKED op=0x%02X", opcode);
             return 0;
         }
     }
@@ -106,20 +121,30 @@ int __fastcall PacketHandler::hkSend(DWORD thisPtr, DWORD edx, BYTE* pBuf, int i
     return s_oSend(thisPtr, pBuf, iLen);
 }
 
-// Recv hook - game server recv handler
-// Bu fonksiyon __thiscall, ECX = CAPISocket this pointer
-// Parametreler bilinmiyor, sadece this pointer'i yakaliyoruz
 int __fastcall PacketHandler::hkRecv(DWORD thisPtr, DWORD edx, BYTE* pBuf, int iLen)
 {
-    // Orijinal fonksiyonu cagir
+    // Version spoof: game process etmeden ONCE pBuf'i patcha
+    if (pBuf && iLen >= 4 && pBuf[0] == 0x2B)
+    {
+        uint16_t serverVer = *(uint16_t*)(&pBuf[2]);
+        RevLog("VER_RECV: server=%u client=%u", serverVer, s_clientVersion);
+        if (s_clientVersion != 0 && serverVer != s_clientVersion)
+        {
+            *(uint16_t*)(&pBuf[2]) = s_clientVersion;
+            RevLog("VER_SPOOFED: %u -> %u", serverVer, s_clientVersion);
+        }
+    }
+
     int result = s_oRecv(thisPtr, pBuf, iLen);
-    
-    // Basarili donusten sonra logla (crash onleme)
-    // Not: Bu fonksiyonun parametreleri farkli olabilir
-    // Sadece cagirildigini logluyoruz
-    static int recvCount = 0;
-    recvCount++;
-    if (recvCount <= 5) {
+
+    if (pBuf && iLen > 0)
+    {
+        uint8 opcode = pBuf[0];
+        char hex[64] = {};
+        int dumpLen = iLen < 16 ? iLen : 16;
+        for (int i = 0; i < dumpLen; i++)
+            sprintf(hex + i * 3, "%02X ", pBuf[i]);
+        RevLog("RECV op=0x%02X len=%d [%s]", opcode, iLen, hex);
     }
 
     return result;

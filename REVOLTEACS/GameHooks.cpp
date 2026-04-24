@@ -54,8 +54,14 @@ static DWORD __declspec(naked) hkTick_naked()
 }
 
 // myTick — Tick hook icinden cagirilir
+extern void RevLog(const char* fmt, ...);
+
 void __fastcall CGameHooks::myTick()
 {
+    static int tickCount = 0;
+    if (tickCount < 5)
+        RevLog("tick: hook CALISIYOR #%d", ++tickCount);
+
     if (s_sTimers > clock() - 30)
         return;
 

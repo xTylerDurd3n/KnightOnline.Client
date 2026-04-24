@@ -16,6 +16,8 @@ static CRITICAL_SECTION g_LogCs;
 static BOOL g_LogInit = FALSE;
 static HANDLE g_hConsole = INVALID_HANDLE_VALUE;
 
+
+
 static void InitConsole()
 {
 	AllocConsole();
@@ -31,7 +33,7 @@ static void InitConsole()
 	}
 }
 
-static void RevLog(const char *fmt, ...)
+void RevLog(const char *fmt, ...)
 {
 	if (!g_LogInit)
 	{
@@ -74,29 +76,175 @@ static void RevLog(const char *fmt, ...)
 	LeaveCriticalSection(&g_LogCs);
 }
 
+static void LogLoadedModules(const char *tag)
+{
+	HMODULE hMods[256];
+	DWORD cbNeeded;
+	if (!EnumProcessModules(GetCurrentProcess(), hMods, sizeof(hMods), &cbNeeded))
+	{
+		RevLog("modules[%s]: EnumProcessModules failed err=%lu", tag, GetLastError());
+		return;
+	}
+	DWORD count = cbNeeded / sizeof(HMODULE);
+	RevLog("modules[%s]: %lu DLL yuklendi", tag, count);
+	for (DWORD i = 0; i < count; i++)
+	{
+		char name[MAX_PATH];
+		if (GetModuleFileNameExA(GetCurrentProcess(), hMods[i], name, MAX_PATH))
+			RevLog("  [%02lu] base=%p  %s", i, hMods[i], name);
+	}
+}
+
 // ============================================================================
-// Remap + XIGNCODE bypass baslangici
-// TODO: Section remap Themida RWX crash riski nedeniyle devre disi.
-//       Yeni client adresler dogrulaninca RemapProcess buraya eklenecek.
+// REVOLTEACSRemapProcess — Themida unpack bittikten SONRA cagrilmali
+// Oyunun 3 kod bolgesini PAGE_EXECUTE_READWRITE olarak remap eder:
+//   - XIGNCODE'un sayfa koruma taramalari bypass edilir
+//   - ApplyPatches sonraki WritePatch cagrilerinde VirtualProtect gerekmez
+//   - ZwUnmapViewOfSection + ZwMapViewOfSection: yeni anonymous section, orijinal baytlar kopyalanir
+//
+// Bolgeler (CLAUDE.md'den):
+//   0x00400000 - 11.25MB  — ana kod + data section
+//   0x00F30000 -  1.5MB   — XIGNCODE code region
+//   0x01060000 -   64KB   — ek stub region
+// ============================================================================
+static void REVOLTEACSRemapProcess(HANDLE hProcess)
+{
+	BYTE *imageBase = (BYTE *)GetModuleHandleA(NULL);
+	PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)imageBase;
+	PIMAGE_NT_HEADERS nt  = (PIMAGE_NT_HEADERS)(imageBase + dos->e_lfanew);
+	SIZE_T imageSize      = nt->OptionalHeader.SizeOfImage;
+
+	RevLog("remap: KO.exe @ %p size=0x%X", imageBase, (DWORD)imageSize);
+
+	// 1. Copy buffer — VirtualAlloc sifirlar, NOACCESS sayfalar sifir kalir
+	BYTE *copyBuf = (BYTE *)VirtualAlloc(NULL, imageSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	if (!copyBuf) { RevLog("remap: VirtualAlloc failed"); return; }
+
+	// 2. Sayfa sayfa oku — NOACCESS / uncommitted sayfaları atla, offsetlerini kaydet
+	DWORD naccessPages[8192];
+	DWORD naccessCount = 0;
+	DWORD readOk = 0, readSkip = 0;
+
+	for (SIZE_T off = 0; off < imageSize; off += 0x1000)
+	{
+		BYTE *page = imageBase + off;
+		MEMORY_BASIC_INFORMATION mbi = {};
+		VirtualQueryEx(hProcess, page, &mbi, sizeof(mbi));
+
+		bool accessible = (mbi.State == MEM_COMMIT) &&
+						  (mbi.Protect != PAGE_NOACCESS) &&
+						  (mbi.Protect != 0);
+
+		if (!accessible)
+		{
+			if (naccessCount < 8192) naccessPages[naccessCount++] = (DWORD)off;
+			readSkip++;
+			continue;
+		}
+
+		ReadProcessMemory(hProcess, page, copyBuf + off, 0x1000, NULL);
+		readOk++;
+	}
+	RevLog("remap: read — %lu OK, %lu NOACCESS/skipped", readOk, readSkip);
+
+	// 3. ZwCreateSection
+	HANDLE hSection = NULL;
+	LARGE_INTEGER secSize = {}; secSize.QuadPart = (LONGLONG)imageSize;
+	NTSTATUS r1 = ZwCreateSection(&hSection, SECTION_ALL_ACCESS, NULL, &secSize, PAGE_EXECUTE_READWRITE, SEC_COMMIT, NULL);
+	if (r1) { RevLog("remap: ZwCreateSection FAILED 0x%08lX", r1); VirtualFree(copyBuf, 0, MEM_RELEASE); return; }
+
+	// 4. ZwUnmapViewOfSection — buradan sonra image kaybolur
+	NTSTATUS r2 = ZwUnmapViewOfSection(hProcess, imageBase);
+	if (r2) { RevLog("remap: ZwUnmapViewOfSection FAILED 0x%08lX", r2); CloseHandle(hSection); VirtualFree(copyBuf, 0, MEM_RELEASE); return; }
+
+	// 5. ZwMapViewOfSection — ayni adrese yeni RWX section
+	PVOID viewBase = imageBase;
+	LARGE_INTEGER secOff = {}; SIZE_T viewSize = 0;
+	NTSTATUS r3 = ZwMapViewOfSection(hSection, hProcess, &viewBase, 0, imageSize, &secOff, &viewSize, ViewUnmap, 0, PAGE_EXECUTE_READWRITE);
+	if (r3) { RevLog("remap: ZwMapViewOfSection FAILED 0x%08lX — IMAGE LOST", r3); CloseHandle(hSection); VirtualFree(copyBuf, 0, MEM_RELEASE); return; }
+
+	// 6. Icerigi geri yaz
+	SIZE_T written = 0;
+	WriteProcessMemory(hProcess, viewBase, copyBuf, viewSize, &written);
+	CloseHandle(hSection);
+	VirtualFree(copyBuf, 0, MEM_RELEASE);
+
+	// 7. NOACCESS sayfalarini geri koru — Themida VEH'i bu sayfalara bagimli
+	for (DWORD i = 0; i < naccessCount; i++)
+	{
+		DWORD oldProt;
+		VirtualProtect((BYTE *)viewBase + naccessPages[i], 0x1000, PAGE_NOACCESS, &oldProt);
+	}
+
+	RevLog("remap: KO.exe OK — %lu RWX, %lu NOACCESS restored, written=0x%X",
+		   readOk, naccessCount, (DWORD)written);
+}
+
+
+
+static void HookNtQSI();
+
 // ============================================================================
 // ============================================================================
 // WritePatch — adrese byte dizisi yazar, VirtualProtect ile RWX yapar
 // ============================================================================
-static void WritePatch(DWORD addr, const BYTE *bytes, SIZE_T len)
+// expected: patch oncesi bu adreste olmasi gereken byte'lar (NULL = kontrol etme)
+static void WritePatch(DWORD addr, const BYTE *bytes, SIZE_T len,
+					   const BYTE *expected = nullptr, SIZE_T expectedLen = 0)
 {
+	uintptr_t gameBase = (uintptr_t)GetModuleHandleA(NULL);
+	uintptr_t rva = addr - gameBase;
+
+	// 1. Pre-patch: beklenen byte'lar varsa kontrol et
+	if (expected && expectedLen > 0)
+	{
+		char got[64] = {}, exp[64] = {};
+		bool match = true;
+		for (SIZE_T i = 0; i < expectedLen; i++)
+		{
+			BYTE cur = *(BYTE *)(addr + i);
+			sprintf(got + strlen(got), "%02X ", cur);
+			sprintf(exp + strlen(exp), "%02X ", expected[i]);
+			if (cur != expected[i])
+				match = false;
+		}
+		if (!match)
+		{
+			RevLog("patch: WRONG LOCATION @ IDA:0x%p — expected [%s] got [%s], SKIPPED",
+				   (void *)(0x400000 + rva), exp, got);
+			return;
+		}
+	}
+
 	DWORD oldProt;
 	if (!VirtualProtect((LPVOID)addr, len, PAGE_EXECUTE_READWRITE, &oldProt))
 	{
-		RevLog("patch: VirtualProtect failed @ 0x%08lX (err=%lu)", addr, GetLastError());
+		RevLog("patch: VirtualProtect failed @ IDA:0x%p (err=%lu)", (void *)(0x400000 + rva), GetLastError());
 		return;
 	}
 	memcpy((void *)addr, bytes, len);
 	VirtualProtect((LPVOID)addr, len, oldProt, &oldProt);
-	RevLog("patch: wrote %zu bytes @ 0x%08lX", len, addr);
+
+	// 2. Post-patch: yazdıklarımızı readback ile doğrula
+	char written[64] = {}, readback[64] = {};
+	bool ok = true;
+	for (SIZE_T i = 0; i < len; i++)
+	{
+		BYTE cur = *(BYTE *)(addr + i);
+		sprintf(written + strlen(written), "%02X ", bytes[i]);
+		sprintf(readback + strlen(readback), "%02X ", cur);
+		if (cur != bytes[i])
+			ok = false;
+	}
+	if (ok)
+		RevLog("patch: OK @ VA:0x%p (IDA:0x%p) [%s]", (void *)addr, (void *)(0x400000 + rva), written);
+	else
+		RevLog("patch: READBACK MISMATCH @ IDA:0x%p — wrote [%s] but got [%s]",
+			   (void *)(0x400000 + rva), written, readback);
 }
 
 // ============================================================================
-// PatchXigncode — XIGNCODE init bloğunu atla
+// ApplyPatches — Themida unpack bittikten sonra uygulanan tum memory patch'ler
 //
 // sub_E73C73 içinde loc_E73CD5 (0x00E73CD5) adresinden başlayan __try bloğu
 // sub_E9263B'yi (XIGNCODE init) çağırıyor.
@@ -107,45 +255,38 @@ static void WritePatch(DWORD addr, const BYTE *bytes, SIZE_T len)
 //   Hedef (0x00E73D20) - (Patch adresi (0x00E73CD5) + 5) = 0x46
 //   CPU: IP = 0x00E73CD5 + 5 = 0x00E73CDA, sonra +0x46 = 0x00E73D20
 // ============================================================================
-static void PatchXigncode()
+static void ApplyPatches()
 {
-	// --- Patch 1: XIGNCODE init dispatcher skip ---
-	// sub_E73C73 / loc_E73CD5: __try blogu sub_E9263B'yi (XIGNCODE init) cagiriyor.
-	// JMP ile atlayip basari path'ine (0x00E73D20) gidiyoruz.
-	// Offset = 0x00E73D20 - (0x00E73CD5 + 5) = 0x46
-	BYTE patch1_success[] = {0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3};
-	WritePatch(0x00E73CD5, patch1_success, sizeof(patch1_success));
-	RevLog("xigncode: [1] dispatcher init skip (0x00E73CD5 -> JMP 0x00E73D20)");
+	// Patch 1: 0x00E73CD5 JMP dispatcher skip — adres dogrulanmadi, devre disi
+	// BYTE patch1_success[] = {0xE9, 0x46, 0x00, 0x00, 0x00};
+	// WritePatch(0x00E73CD5, patch1_success, sizeof(patch1_success));
 
-	// --- Patch 2: CRC32 integrity check bypass ---
-	// 0x005753B9: sub_510F30 CRC32 hesapliyor, 0x005753C1'de 0D922F8F5h ile karsilastiriyor.
-	// 0x005753C6: jnz loc_5753DD → CRC eslesmediyse basari path'ini atla.
-	// 90 90 (NOP NOP): kosula bakilmaksizin her zaman basari path'ine gir.
+	// Patch 2: XIGNCODE CRC32 scanner bypass
+	// sub_510F30 CRC32 hesapliyor, 0x005753C1'de sabit degerle karsilastiriyor.
+	// jnz NOP → sonuc ne olursa XIGNCODE scanner her zaman "OK" doner.
+	// Bu patch aktifken DetourFunction hook'lari tespit edilemez.
 	BYTE patch2[] = {0x90, 0x90};
 	WritePatch(0x005753C6, patch2, sizeof(patch2));
-	RevLog("xigncode: [2] CRC32 check NOP (0x005753C6)");
 
-	// --- Patch 3: Runtime Polling Loop Bypass (Yeni Bulduğumuz) ---
-	// 0x00459B64: jnz loc_459C41 -> Hata/Event tablosuna zıplatan komut.
-	// Bu zıplamayı NOP'layarak (6 byte) oyunun hata yakaladığında
-	// o bozuk Jump Table'a gitmesini engelliyoruz.
-	// BYTE patch3[] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
-	BYTE patch3[] = {0xC3};
-	WritePatch(0x00459B64, patch3, sizeof(patch3));
-	RevLog("xigncode: [3] Runtime Polling Loop NOP (0x00459B64)");
+	// Patch 3: kaldirildi (sub_459B24 lazy init, heartbeat degil)
 
-	// Patch 4 (Revize): Fonksiyonu daha girmeden öldür
-	// 0x00E11900 adresine RET koyuyoruz (Adresi IDA'dan teyit et, loc_A11960'ın üstündeki fonksiyon başı)
-	BYTE retKill[] = {0xC3};
-	WritePatch(0x00E11900, retKill, sizeof(retKill));
-	RevLog("xigncode: [4] Critical Function 0x00E11900 KILLED before execution");
+	// Patch 4: 0x00E11900 entry kill — adres dogrulanmadi, devre disi
+	// BYTE retKill[] = {0xC3};
+	// WritePatch(0x00E11900, retKill, sizeof(retKill));
+
+	// Patch 5: 0x00E11C8A 6-byte NOP — adres dogrulanmadi, devre disi
+	// BYTE nopCall[] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+	// WritePatch(0x00E11C8A, nopCall, sizeof(nopCall));
+
+	RevLog("xigncode: Patch 2 (CRC scanner NOP @ 0x005753C6) aktif");
 }
 
 // ============================================================================
 // XIGNCODE Dispatcher Bypass
 //
-// dword_F661D0 @ 0x00F661D0  — ana XIGNCODE SDK function pointer slot'u.
-// dword_F6654C @ 0x00F6654C  — TBL validation slot'u.
+// XIGN_SLOT_DISPATCHER   (0x00F661D0)  — ana SDK dispatcher slot'u.
+// XIGN_SLOT_TBL_VALIDATE (0x00F6654C)  — TBL integrity validation slot'u.
+// Adresler framework.h'ta tanimli (VA, ASLR yok).
 //
 // XIGNCODE SDK init bu slotlara gercek check fn adresini yaziyor.
 // Watchdog her 100ms'de ikisini de kontrol edip NopHandler'a geri yazar.
@@ -156,21 +297,30 @@ static void PatchXigncode()
 //   (jz -> jmp, 0x74 -> 0xEB) — Themida unpack bitmeden yapilmamali.
 // ============================================================================
 
-// Slot override yerine Detour hook — slot degeri degismez, XIGNCODE fark etmez
-// F661D0 slot'unun gosterdigi adres runtime'da ogrenilip hook'laniyor.
+// --- F661D0: Ana dispatcher hook ---
+// Orijinal HICBIR ZAMAN cagrilmaz — orijinal cagrilirsa XIGNCODE scan yapip kill eder.
+// Direkt return 1, caller + arg loglanir.
 typedef int(__stdcall *tXignCheck)(DWORD arg);
 static tXignCheck oXignCheck = nullptr;
 
 static int __stdcall hkXignCheck(DWORD arg)
 {
-	// Her cagriyi logla (ilk 20 kez)
 	static int callCount = 0;
-	if (callCount < 20)
+	if (callCount < 50)
 	{
-		RevLog("xign: check called arg=0x%08lX -> returning 1", arg);
+		void *retAddr = _ReturnAddress();
+
+		char argDump[64] = "(unreadable)";
+		if (!IsBadReadPtr((void*)arg, 16))
+			sprintf_s(argDump, sizeof(argDump), "%08X %08X %08X %08X",
+				*(DWORD*)(arg+0), *(DWORD*)(arg+4),
+				*(DWORD*)(arg+8), *(DWORD*)(arg+12));
+
+		RevLog("xign: F661D0 [%d] caller=%p arg=0x%08lX dump=[%s]",
+			callCount, retAddr, arg, argDump);
 		callCount++;
 	}
-	return 1; // success
+	return 1;
 }
 
 DWORD WINAPI XignDispatcherWatchdog(LPVOID)
@@ -186,46 +336,51 @@ DWORD WINAPI XignDispatcherWatchdog(LPVOID)
 		__try
 		{
 			// 1. Slotun icindeki adresi kontrol et
-			void **pSlot = (void **)0x00F661D0;
+			void **pSlot = (void **)XIGN_SLOT_DISPATCHER;
 			void *curFuncAddr = *pSlot;
 
 			// 2. UNPACK GERÇEKLEŞTİ Mİ?
 			// Slot dolduysa (nullptr degilse) ve henüz biz müdahale etmediysek
-			if (curFuncAddr != nullptr && curFuncAddr != (void *)hkXignCheck)
+			if (curFuncAddr != nullptr && !patchesApplied)
 			{
 				RevLog("watchdog: UNPACK DETECTED! F661D0 contains: %p", curFuncAddr);
+				// LogLoadedModules("unpack");
 
-				// --- A) POINTER SWAP (Sessiz Yönlendirme) ---
-				// Orijinal fonksiyonu sakla (trambolin yerine)
-				oXignCheck = (tXignCheck)curFuncAddr;
+				// --- A) SECTION REMAP — Themida bitti, artik guvenli ---
+				// DEVRE DISI: watchdog tetiklendiginde oyun zaten caliyor,
+				// ZwUnmapViewOfSection aktif thread'leri crash ettiriyor.
+				// WritePatch/DetourFunction kendi VirtualProtect'ini kullaniyor.
+				// HANDLE hSelfProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, GetCurrentProcessId());
+				// if (hSelfProc)
+				// {
+				// 	REVOLTEACSRemapProcess(hSelfProc);
+				// 	CloseHandle(hSelfProc);
+				// }
+				// else
+				// {
+				// 	RevLog("watchdog: OpenProcess failed for remap (err=%lu)", GetLastError());
+				// }
 
-				DWORD oldProt;
-				if (VirtualProtect(pSlot, sizeof(void *), PAGE_READWRITE, &oldProt))
-				{
-					// Slotun icindeki adresi bizim hook fonksiyonumuzla degistiriyoruz
-					*pSlot = (void *)hkXignCheck;
-					VirtualProtect(pSlot, sizeof(void *), oldProt, &oldProt);
+				// --- B) DETOUR HOOK: F661D0 (ana dispatcher) ---
+				oXignCheck = (tXignCheck)DetourFunction((PBYTE)curFuncAddr, (PBYTE)hkXignCheck);
+				RevLog("hook: F661D0 dispatcher @ %p -> hkXignCheck, trampoline=%p", curFuncAddr, oXignCheck);
 
-					RevLog("watchdog: Pointer Swapped! Original: %p -> Hook: %p", oXignCheck, hkXignCheck);
+				// --- C) XIGNCODE PATCH ---
+				ApplyPatches();
+				patchesApplied = true;
 
-					// --- B) GECİKMELİ YAMALAMA (Patching) ---
-					// Kodlar artik acildigina gore CRC ve Dispatcher yamalarini yapabiliriz
-					if (!patchesApplied)
-					{
-						PatchXigncode();
-						patchesApplied = true;
+				// --- D) HANDLE SCAN GİZLEME ---
+				HookNtQSI();
 
-						// YAMANIN GERÇEKTEN ORADA OLUP OLMADIĞINI KONTROL ET
-						BYTE check[6];
-						memcpy(check, (void *)0x00459B64, 6);
-						RevLog("Verify Patch 3 at 0x00459B64: %02X %02X %02X %02X %02X %02X",
-							   check[0], check[1], check[2], check[3], check[4], check[5]);
-					}
-				}
-				else
-				{
-					RevLog("watchdog: VirtualProtect FAILED! Error: %lu", GetLastError());
-				}
+				// --- E) GAME HOOKS ---
+				g_GameHooks.InitAllHooks(GetCurrentProcess());
+
+				// --- E) SEND/RECV HOOK — devre disi ---
+
+				BYTE check[6];
+				memcpy(check, (void *)0x00459B64, 6);
+				RevLog("Verify Patch 3 at 0x00459B64: %02X %02X %02X %02X %02X %02X",
+					   check[0], check[1], check[2], check[3], check[4], check[5]);
 			}
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
@@ -234,14 +389,126 @@ DWORD WINAPI XignDispatcherWatchdog(LPVOID)
 			// Sessizce beklemeye devam ediyoruz.
 		}
 
-		// Hayatta oldugumuzu logla (her 10 saniyede bir - 100ms * 100)
-		if ((++tick % 100) == 0)
-			RevLog("watchdog: alive, still waiting/monitoring...");
+		// if ((++tick % 100) == 0)
+		// 	RevLog("watchdog: alive, still waiting/monitoring...");
+		++tick;
 
 		Sleep(1); // 100ms bekleme (Themida'yi uyandirmamak icin ideal süre)
 	}
 	return 0;
 }
+
+// ============================================================================
+// NtQuerySystemInformation hook — dış araç handle scan gizleme
+//
+// XIGNCODE periyodik olarak SystemHandleInformation (cls=16) çağırır.
+// Tüm sistem handle'larını listeler, game process'ine dışarıdan açılmış
+// handle'ları (CE, x32dbg vb.) tespit eder ve kill eder.
+//
+// Hook: sonuçlardan game process'ine ait dış handle'ları filtrele.
+// ============================================================================
+typedef struct {
+	USHORT UniqueProcessId;
+	USHORT CreatorBackTraceIndex;
+	UCHAR  ObjectTypeIndex;
+	UCHAR  HandleAttributes;
+	USHORT HandleValue;
+	PVOID  Object;
+	ULONG  GrantedAccess;
+} SYS_HANDLE_ENTRY;
+
+typedef struct {
+	ULONG          NumberOfHandles;
+	SYS_HANDLE_ENTRY Handles[1];
+} SYS_HANDLE_INFO;
+
+typedef NTSTATUS(NTAPI *tNtQSI)(ULONG, PVOID, ULONG, PULONG);
+static tNtQSI oNtQSI = nullptr;
+static PVOID  s_GameProcessObject = nullptr;
+
+static NTSTATUS NTAPI hkNtQSI(ULONG cls, PVOID buf, ULONG len, PULONG retLen)
+{
+	NTSTATUS st = oNtQSI(cls, buf, len, retLen);
+
+	static int callCount = 0;
+	if (cls == 16 && callCount < 10)
+	{
+		RevLog("NtQSI: SystemHandleInformation cagrisi [%d] caller=%p st=0x%08lX",
+			callCount, _ReturnAddress(), (ULONG)st);
+		callCount++;
+	}
+
+	if (st != 0 || cls != 16 || !buf)
+		return st;
+
+	SYS_HANDLE_INFO *info = (SYS_HANDLE_INFO *)buf;
+	DWORD myPid = GetCurrentProcessId();
+
+	// İlk çağrıda game process'in kernel object pointer'ını bul
+	if (!s_GameProcessObject)
+	{
+		HANDLE hSelf = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, myPid);
+		if (hSelf)
+		{
+			USHORT selfVal = (USHORT)(ULONG_PTR)hSelf;
+			for (ULONG i = 0; i < info->NumberOfHandles; i++)
+			{
+				if (info->Handles[i].UniqueProcessId == (USHORT)myPid &&
+					info->Handles[i].HandleValue == selfVal)
+				{
+					s_GameProcessObject = info->Handles[i].Object;
+					RevLog("NtQSI: game process kernel object = %p", s_GameProcessObject);
+					break;
+				}
+			}
+			CloseHandle(hSelf);
+		}
+	}
+
+	if (!s_GameProcessObject)
+		return st;
+
+	// Game process'e dışarıdan açılmış handle'ları filtrele
+	ULONG writeIdx = 0, removed = 0;
+	for (ULONG i = 0; i < info->NumberOfHandles; i++)
+	{
+		bool external   = (info->Handles[i].UniqueProcessId != (USHORT)myPid);
+		bool pointsToUs = (info->Handles[i].Object == s_GameProcessObject);
+
+		if (external && pointsToUs)
+		{
+			RevLog("NtQSI: FILTERED external handle — pid=%u handle=0x%X access=0x%08lX",
+				info->Handles[i].UniqueProcessId,
+				info->Handles[i].HandleValue,
+				info->Handles[i].GrantedAccess);
+			removed++;
+			continue;
+		}
+		info->Handles[writeIdx++] = info->Handles[i];
+	}
+
+	if (removed > 0)
+	{
+		info->NumberOfHandles = writeIdx;
+		RevLog("NtQSI: %lu dis handle gizlendi", removed);
+	}
+
+	return st;
+}
+
+static void HookNtQSI()
+{
+	HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+	if (!hNtdll) return;
+
+	oNtQSI = (tNtQSI)GetProcAddress(hNtdll, "NtQuerySystemInformation");
+	if (oNtQSI)
+		oNtQSI = (tNtQSI)DetourFunction((PBYTE)oNtQSI, (PBYTE)hkNtQSI);
+
+	RevLog("hook: NtQuerySystemInformation hooked");
+}
+
+
 
 // ============================================================================
 // CreateWindowExA/W hook — XIGNCODE pencere tespiti
@@ -329,6 +596,63 @@ static HWND WINAPI hkCreateWindowExW(
 							dwStyle, X, Y, W, H, hParent, hMenu, hInst, lpParam);
 }
 
+// ============================================================================
+// ShellExecuteA/W + ShellExecuteExA/W hook — xxd-0.xem kim baslatıyor?
+// Sadece log, bloklama yok. Caller adresi = patch yapilacak yer.
+// ============================================================================
+typedef HINSTANCE(WINAPI *tShellExA)(HWND, LPCSTR, LPCSTR, LPCSTR, LPCSTR, INT);
+typedef HINSTANCE(WINAPI *tShellExW)(HWND, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, INT);
+typedef BOOL(WINAPI *tShellExExA)(SHELLEXECUTEINFOA*);
+typedef BOOL(WINAPI *tShellExExW)(SHELLEXECUTEINFOW*);
+
+static tShellExA  oShellExA  = nullptr;
+static tShellExW  oShellExW  = nullptr;
+static tShellExExA oShellExExA = nullptr;
+static tShellExExW oShellExExW = nullptr;
+
+static HINSTANCE WINAPI hkShellExA(HWND h, LPCSTR op, LPCSTR file, LPCSTR params, LPCSTR dir, INT show)
+{
+	RevLog("ShellExecuteA: file='%s' params='%s' caller=%p", file?file:"(null)", params?params:"(null)", _ReturnAddress());
+	return oShellExA(h, op, file, params, dir, show);
+}
+static HINSTANCE WINAPI hkShellExW(HWND h, LPCWSTR op, LPCWSTR file, LPCWSTR params, LPCWSTR dir, INT show)
+{
+	char fileA[512]="(null)", paramsA[256]="(null)";
+	if (file)   WideCharToMultiByte(CP_ACP,0,file,-1,fileA,sizeof(fileA),NULL,NULL);
+	if (params) WideCharToMultiByte(CP_ACP,0,params,-1,paramsA,sizeof(paramsA),NULL,NULL);
+	RevLog("ShellExecuteW: file='%s' params='%s' caller=%p", fileA, paramsA, _ReturnAddress());
+	return oShellExW(h, op, file, params, dir, show);
+}
+static BOOL WINAPI hkShellExExA(SHELLEXECUTEINFOA* pei)
+{
+	RevLog("ShellExecuteExA: file='%s' params='%s' caller=%p",
+		pei&&pei->lpFile?pei->lpFile:"(null)", pei&&pei->lpParameters?pei->lpParameters:"(null)", _ReturnAddress());
+	return oShellExExA(pei);
+}
+static BOOL WINAPI hkShellExExW(SHELLEXECUTEINFOW* pei)
+{
+	char fileA[512]="(null)", paramsA[256]="(null)";
+	if (pei && pei->lpFile)       WideCharToMultiByte(CP_ACP,0,pei->lpFile,-1,fileA,sizeof(fileA),NULL,NULL);
+	if (pei && pei->lpParameters) WideCharToMultiByte(CP_ACP,0,pei->lpParameters,-1,paramsA,sizeof(paramsA),NULL,NULL);
+	RevLog("ShellExecuteExW: file='%s' params='%s' caller=%p", fileA, paramsA, _ReturnAddress());
+	return oShellExExW(pei);
+}
+
+static void HookShellExecute()
+{
+	HMODULE hShell = LoadLibraryA("shell32.dll");
+	if (!hShell) { RevLog("ShellExecute hook: shell32 yok"); return; }
+	oShellExA   = (tShellExA)  GetProcAddress(hShell, "ShellExecuteA");
+	oShellExW   = (tShellExW)  GetProcAddress(hShell, "ShellExecuteW");
+	oShellExExA = (tShellExExA)GetProcAddress(hShell, "ShellExecuteExA");
+	oShellExExW = (tShellExExW)GetProcAddress(hShell, "ShellExecuteExW");
+	if (oShellExA)   oShellExA   = (tShellExA)  DetourFunction((PBYTE)oShellExA,   (PBYTE)hkShellExA);
+	if (oShellExW)   oShellExW   = (tShellExW)  DetourFunction((PBYTE)oShellExW,   (PBYTE)hkShellExW);
+	if (oShellExExA) oShellExExA = (tShellExExA)DetourFunction((PBYTE)oShellExExA, (PBYTE)hkShellExExA);
+	if (oShellExExW) oShellExExW = (tShellExExW)DetourFunction((PBYTE)oShellExExW, (PBYTE)hkShellExExW);
+	RevLog("hook: ShellExecuteA/W + ShellExecuteExA/W hooked (log only)");
+}
+
 static void HookCreateWindow()
 {
 	HMODULE hUser32 = GetModuleHandleA("user32.dll");
@@ -393,7 +717,12 @@ static int WINAPI hkMessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT
 	if (IsEmptyDialog(lpText, lpCaption))
 	{
 		int reply = AutoReply(uType);
-		RevLog("MessageBoxA: BLOCKED (empty dialog) -> reply=%d", reply);
+		// Race condition fix: watchdog'un tum patch'leri uygulamasi icin bekle.
+		// Aninda donersek T=05728 0x00E11900 icinde kosarken patch[4] henuz hazir olmaz.
+		// 2s bekleyince watchdog (<100ms toplam) tamamlanmis olur.
+		RevLog("MessageBoxA: BLOCKED (empty dialog) -> sleeping 2s for patch window...");
+		Sleep(2000);
+		RevLog("MessageBoxA: BLOCKED -> reply=%d", reply);
 		return reply;
 	}
 
@@ -447,9 +776,17 @@ static void HookMessageBox()
 // ============================================================================
 typedef VOID(WINAPI *tExitProcess)(UINT);
 typedef BOOL(WINAPI *tTerminateProcess)(HANDLE, UINT);
+typedef NTSTATUS(NTAPI *tNtTerminateProcess)(HANDLE, NTSTATUS);
+typedef NTSTATUS(NTAPI *tNtTerminateThread)(HANDLE, NTSTATUS);
+typedef VOID(NTAPI *tRtlExitUserProcess)(NTSTATUS);
+typedef NTSTATUS(NTAPI *tNtRaiseHardError)(NTSTATUS, ULONG, ULONG, PULONG_PTR, ULONG, PULONG);
 
 static tExitProcess oExitProcess = nullptr;
 static tTerminateProcess oTerminateProcess = nullptr;
+static tNtTerminateProcess oNtTerminateProcess = nullptr;
+static tNtTerminateThread oNtTerminateThread = nullptr;
+static tRtlExitUserProcess oRtlExitUserProcess = nullptr;
+static tNtRaiseHardError oNtRaiseHardError = nullptr;
 
 // Caller adresini oku (hook icinde esp+4 = return address)
 static DWORD GetReturnAddr()
@@ -501,102 +838,210 @@ static void PauseConsole(const char *reason, bool forceWait = false)
 
 static VOID WINAPI hkExitProcess(UINT uExitCode)
 {
-	RevLog("EXIT: ExitProcess(code=%u) T=%lu caller=0x%08lX",
-		   uExitCode, GetCurrentThreadId(), GetReturnAddr());
-	PauseConsole("ExitProcess");
+	RevLog("EXIT: ExitProcess(code=%u) T=%lu", uExitCode, GetCurrentThreadId());
+	// XIGNCODE fake-crash exit kodunu block'la
+	if (uExitCode == 0xC0000005)
+	{
+		RevLog("EXIT: ExitProcess BLOCKED (XIGNCODE self-kill)");
+		return;
+	}
 	oExitProcess(uExitCode);
 }
 
 static BOOL WINAPI hkTerminateProcess(HANDLE hProc, UINT uExitCode)
 {
-	RevLog("EXIT: TerminateProcess(pid=%lu code=%u) T=%lu caller=0x%08lX",
-		   GetProcessId(hProc), uExitCode, GetCurrentThreadId(), GetReturnAddr());
-	if (GetProcessId(hProc) == GetCurrentProcessId())
-		PauseConsole("TerminateProcess");
+	DWORD pid = GetProcessId(hProc);
+	bool isSelf = (hProc == (HANDLE)-1 || pid == GetCurrentProcessId());
+	RevLog("EXIT: TerminateProcess(pid=%lu code=0x%08X) T=%lu self=%d caller=0x%08lX",
+		   pid, uExitCode, GetCurrentThreadId(), isSelf ? 1 : 0, GetReturnAddr());
+
+	if (isSelf && uExitCode == 0xC0000005)
+	{
+		RevLog("EXIT: TerminateProcess BLOCKED (XIGNCODE self-kill 0xC0000005)");
+		return TRUE;
+	}
 	return oTerminateProcess(hProc, uExitCode);
+}
+
+static NTSTATUS NTAPI hkNtTerminateProcess(HANDLE hProc, NTSTATUS exitStatus)
+{
+	DWORD pid = GetProcessId(hProc);
+	bool isSelf = (hProc == (HANDLE)-1 || pid == GetCurrentProcessId());
+
+	RevLog("EXIT: NtTerminateProcess(pid=%lu status=0x%08lX) T=%lu self=%d",
+		   pid, (ULONG)exitStatus, GetCurrentThreadId(), isSelf ? 1 : 0);
+
+	// XIGNCODE self-kill: 0xC0000005 (fake AV) ile kendi process'ini oldurmeye calisiyor
+	// Blokla — normal exit kodlari (0, 0xC000013A vb.) gecsin
+	if (isSelf && exitStatus == (NTSTATUS)0xC0000005)
+	{
+		RevLog("EXIT: NtTerminateProcess BLOCKED (XIGNCODE self-kill)");
+		return STATUS_SUCCESS;
+	}
+
+	return oNtTerminateProcess(hProc, exitStatus);
+}
+
+static NTSTATUS NTAPI hkNtTerminateThread(HANDLE hThread, NTSTATUS exitStatus)
+{
+	DWORD tid = GetThreadId(hThread);
+	DWORD myTid = GetCurrentThreadId();
+	bool isSelf = (hThread == (HANDLE)-1 || tid == myTid);
+
+	RevLog("EXIT: NtTerminateThread(tid=%lu status=0x%08lX) T=%lu self=%d caller=0x%08lX",
+		   tid, (ULONG)exitStatus, myTid, isSelf ? 1 : 0, GetReturnAddr());
+
+	if (exitStatus == (NTSTATUS)0xC0000005)
+	{
+		RevLog("EXIT: NtTerminateThread BLOCKED (XIGNCODE kill 0xC0000005)");
+		return STATUS_SUCCESS;
+	}
+	return oNtTerminateThread(hThread, exitStatus);
+}
+
+static VOID NTAPI hkRtlExitUserProcess(NTSTATUS status)
+{
+	RevLog("EXIT: RtlExitUserProcess(status=0x%08lX) T=%lu caller=0x%08lX",
+		   (ULONG)status, GetCurrentThreadId(), GetReturnAddr());
+	if (status == (NTSTATUS)0xC0000005)
+	{
+		RevLog("EXIT: RtlExitUserProcess BLOCKED (XIGNCODE self-kill 0xC0000005)");
+		return;
+	}
+	oRtlExitUserProcess(status);
+}
+
+static NTSTATUS NTAPI hkNtRaiseHardError(NTSTATUS errStatus, ULONG numParams, ULONG unicodeStrMask,
+										  PULONG_PTR params, ULONG responseOption, PULONG response)
+{
+	RevLog("EXIT: NtRaiseHardError(status=0x%08lX resp=%lu) T=%lu caller=0x%08lX",
+		   (ULONG)errStatus, responseOption, GetCurrentThreadId(), GetReturnAddr());
+	// OptionAbortRetryIgnore (6) veya OptionOk (0) ile hard error = process kill
+	if (responseOption >= 5)
+	{
+		RevLog("EXIT: NtRaiseHardError BLOCKED (responseOption=%lu)", responseOption);
+		if (response) *response = 1; // IDOK
+		return STATUS_SUCCESS;
+	}
+	return oNtRaiseHardError(errStatus, numParams, unicodeStrMask, params, responseOption, response);
 }
 
 static LONG WINAPI VehCrashHandler(EXCEPTION_POINTERS *ep)
 {
 	DWORD code = ep->ExceptionRecord->ExceptionCode;
 
-	// Themida'nın kasti hatalarını (0x96) ve Debugger kesmelerini (0x03) pas geç
-	if (code == 0xC0000096 || code == 0x80000003)
-		return EXCEPTION_CONTINUE_SEARCH;
-
-	// Sadece GERÇEK Access Violation hatalarında dur
-	if (code == 0xC0000005)
+	// Anti-cheat / Themida kasıtlı trap exception'ları — kesinlikle dokunma
+	// Bunları handle edersek XIGNCODE/Themida'nın kendi SEH zinciri kırılır
+	switch (code)
 	{
-		PEXCEPTION_RECORD er = ep->ExceptionRecord;
-		PCONTEXT ctx = ep->ContextRecord;
-
-		RevLog("========= !!! REAL CRASH DETECTED !!! =========");
-		RevLog("Hata Kodu   : 0xC0000005 (Access Violation)");
-		RevLog("Hata Adresi : 0x%p", er->ExceptionAddress);
-
-		// 1. Hatanın Tipini Belirle (Okuma mı, Yazma mı?)
-		uintptr_t accessType = er->ExceptionInformation[0]; // 0: Read, 1: Write, 8: DEP Violation
-		uintptr_t faultAddr = er->ExceptionInformation[1];	// Erişilmeye çalışılan hatalı adres
-
-		const char *typeStr = (accessType == 0) ? "READ" : (accessType == 1 ? "WRITE" : "EXECUTE (DEP)");
-		RevLog("Islem Tipi  : %s", typeStr);
-		RevLog("Hedef Adres : 0x%p", (void *)faultAddr);
-
-		// 2. Register Durumlarını Dök (İşlemcinin o anki hali)
-		RevLog("--- CPU REGISTERS ---");
-		RevLog("EAX: %08X | EBX: %08X | ECX: %08X | EDX: %08X", ctx->Eax, ctx->Ebx, ctx->Ecx, ctx->Edx);
-		RevLog("ESI: %08X | EDI: %08X | EBP: %08X | ESP: %08X", ctx->Esi, ctx->Edi, ctx->Ebp, ctx->Esp);
-		RevLog("EIP: %08X (Hatalı komut konumu)", ctx->Eip);
-
-		// 3. Crash Noktasındaki Byte'ları Oku (Disassembly için)
-		unsigned char opcodes[16];
-		if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)ctx->Eip, opcodes, 16, NULL))
-		{
-			char hexStr[64] = {0};
-			for (int i = 0; i < 10; i++)
-				sprintf(hexStr + strlen(hexStr), "%02X ", opcodes[i]);
-			RevLog("Opcodes (EIP): %s", hexStr);
-		}
-
-		// 4. Hangi Modülde Patladı? (Oyun mu, DLL mi, XignCode mu?)
-		HMODULE hMod;
-		char modName[MAX_PATH];
-		if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)er->ExceptionAddress, &hMod))
-		{
-			GetModuleFileNameA(hMod, modName, MAX_PATH);
-			RevLog("Modul Ismi  : %s", modName);
-		}
-		else
-		{
-			RevLog("Modul Ismi  : BILINMIYOR (Dinamik bellek veya Shellcode)");
-		}
-
-		RevLog("===============================================");
-
-		// Şimdi ENTER bekle ki biz bu verileri okuyabilelim
-		PauseConsole("CRASH ANALIZI TAMAMLANDI", true);
+	case 0xC0000096: // Privileged instruction — Themida VM trap
+	case 0x80000003: // INT3 breakpoint — debugger/AC detection
+	case 0x80000004: // Single step — debugger detection
+	case 0xC000001D: // Illegal instruction — Themida VM opcode
+	case 0xC0000374: // Heap corruption — runtime check, bize ait degil
+		return EXCEPTION_CONTINUE_SEARCH;
 	}
 
+	// Sadece ACCESS_VIOLATION logla, digerleri gecir
+	if (code != 0xC0000005)
+		return EXCEPTION_CONTINUE_SEARCH;
+
+	PEXCEPTION_RECORD er = ep->ExceptionRecord;
+	PCONTEXT ctx = ep->ContextRecord;
+	DWORD eip = ctx->Eip;
+
+	// Sistem DLL araligindaki AV'leri gecir (XIGNCODE, ntdll, user32 vs. 0x7xxxxxxx)
+	// Bunlar genelde XIGNCODE'un kendi icindeki kasitli hatalar
+	if (eip >= 0x70000000)
+		return EXCEPTION_CONTINUE_SEARCH;
+
+	// Game address range (0x00400000 - 0x01200000) veya inject DLL'lerimiz
+	RevLog("========= CRASH: ACCESS VIOLATION =========");
+	RevLog("EIP: %08X | Fault: %p | Type: %s",
+		   eip,
+		   (void *)er->ExceptionInformation[1],
+		   er->ExceptionInformation[0] == 0 ? "READ" : (er->ExceptionInformation[0] == 1 ? "WRITE" : "DEP"));
+	RevLog("EAX=%08X EBX=%08X ECX=%08X EDX=%08X", ctx->Eax, ctx->Ebx, ctx->Ecx, ctx->Edx);
+	RevLog("ESI=%08X EDI=%08X EBP=%08X ESP=%08X", ctx->Esi, ctx->Edi, ctx->Ebp, ctx->Esp);
+
+	unsigned char opc[10];
+	if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)eip, opc, sizeof(opc), NULL))
+	{
+		char hex[64] = {};
+		for (int i = 0; i < 10; i++)
+			sprintf(hex + strlen(hex), "%02X ", opc[i]);
+		RevLog("Opcodes: %s", hex);
+	}
+
+	HMODULE hMod;
+	char modName[MAX_PATH];
+	if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)er->ExceptionAddress, &hMod))
+		GetModuleFileNameA(hMod, modName, MAX_PATH);
+	else
+		strcpy_s(modName, "UNKNOWN");
+	RevLog("Module: %s", modName);
+
+	// Call stack: ESP'den return address'leri oku — crashin gercek cagiran kodunu bul
+	uintptr_t gameBase = (uintptr_t)GetModuleHandleA(NULL);
+	RevLog("--- CALL STACK (ESP) ---");
+	DWORD *pStack = (DWORD *)ctx->Esp;
+	for (int i = 0; i < 16; i++)
+	{
+		DWORD val;
+		if (!ReadProcessMemory(GetCurrentProcess(), pStack + i, &val, sizeof(val), NULL))
+			break;
+		// Sadece game exe araligindaki adresleri logla (0x00400000 - 0x01200000)
+		if (val >= 0x00400000 && val <= 0x01200000)
+		{
+			uintptr_t ida = 0x400000 + (val - gameBase);
+			RevLog("  [ESP+%02X] 0x%08lX (IDA:0x%08lX)", i * 4, val, ida);
+		}
+	}
+	RevLog("===========================================");
+
+	// VEH icinde ASLA bloklama yapma — dosyaya yazildi, geciyoruz
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
 static void HookExit()
 {
-	// HMODULE hK32 = GetModuleHandleA("kernel32.dll");
-	// if (!hK32)
-	// 	return;
+	HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+	if (!hK32)
+		return;
 
-	// oExitProcess = (tExitProcess)GetProcAddress(hK32, "ExitProcess");
-	// oTerminateProcess = (tTerminateProcess)GetProcAddress(hK32, "TerminateProcess");
+	oExitProcess = (tExitProcess)GetProcAddress(hK32, "ExitProcess");
+	oTerminateProcess = (tTerminateProcess)GetProcAddress(hK32, "TerminateProcess");
 
-	// if (oExitProcess)
-	// 	oExitProcess = (tExitProcess)DetourFunction((PBYTE)oExitProcess, (PBYTE)hkExitProcess);
-	// if (oTerminateProcess)
-	// 	oTerminateProcess = (tTerminateProcess)DetourFunction((PBYTE)oTerminateProcess, (PBYTE)hkTerminateProcess);
+	if (oExitProcess)
+		oExitProcess = (tExitProcess)DetourFunction((PBYTE)oExitProcess, (PBYTE)hkExitProcess);
+	if (oTerminateProcess)
+		oTerminateProcess = (tTerminateProcess)DetourFunction((PBYTE)oTerminateProcess, (PBYTE)hkTerminateProcess);
 
-	// AddVectoredExceptionHandler(0, VehCrashHandler); // 0 = last handler
+	// NtTerminateProcess / NtTerminateThread — ntdll direkt cagrisi
+	HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+	if (hNtdll)
+	{
+		oNtTerminateProcess = (tNtTerminateProcess)GetProcAddress(hNtdll, "NtTerminateProcess");
+		if (oNtTerminateProcess)
+			oNtTerminateProcess = (tNtTerminateProcess)DetourFunction((PBYTE)oNtTerminateProcess, (PBYTE)hkNtTerminateProcess);
 
-	RevLog("hook: ExitProcess/TerminateProcess/VEH hooked");
+		oNtTerminateThread = (tNtTerminateThread)GetProcAddress(hNtdll, "NtTerminateThread");
+		if (oNtTerminateThread)
+			oNtTerminateThread = (tNtTerminateThread)DetourFunction((PBYTE)oNtTerminateThread, (PBYTE)hkNtTerminateThread);
+
+		oRtlExitUserProcess = (tRtlExitUserProcess)GetProcAddress(hNtdll, "RtlExitUserProcess");
+		if (oRtlExitUserProcess)
+			oRtlExitUserProcess = (tRtlExitUserProcess)DetourFunction((PBYTE)oRtlExitUserProcess, (PBYTE)hkRtlExitUserProcess);
+
+		oNtRaiseHardError = (tNtRaiseHardError)GetProcAddress(hNtdll, "NtRaiseHardError");
+		if (oNtRaiseHardError)
+			oNtRaiseHardError = (tNtRaiseHardError)DetourFunction((PBYTE)oNtRaiseHardError, (PBYTE)hkNtRaiseHardError);
+	}
+
+	// VEH: sadece patch sonrasi crash tespiti icin, Themida trap'leri filtreli
+	AddVectoredExceptionHandler(0, VehCrashHandler);
+
+	RevLog("hook: ExitProcess/TerminateProcess/Nt+RtlExit/NtTermThread/NtRaiseHardError/VEH hooked");
 }
 
 // ============================================================================
@@ -607,14 +1052,21 @@ void REVOLTEACSHook(HANDLE hProcess)
 {
 	// g_GameHooks.InitAllHooks(hProcess);  // EndGame 0x00E76BD9, Tick 0x006CE830
 	// g_UIManager.Init();
-	// g_PacketHandler.InitSendHook();      // 0x006FC190
-	// g_PacketHandler.InitRecvHook();      // 0x0082C7D0
 	// RenderSystem::Init();
 	// Engine = new PearlEngine(); Engine->Init();
 
-	HookCreateWindow();
-	HookMessageBox();
-	HookExit();
+	// HookCreateWindow();  // gecici devre disi — saf injection testi
+	// HookMessageBox();
+	// HookExit();
+
+	// Send/Recv hook — gecici devre disi (version spoof debug)
+	// CreateThread(NULL, 0, [](LPVOID) -> DWORD {
+	// 	Sleep(5000);
+	// 	g_PacketHandler.InitSendHook();
+	// 	g_PacketHandler.InitRecvHook();
+	// 	RevLog("hook: Send/Recv hooks aktif (KO_SND_FNC=0x006FC190, KO_RECV_FNC=0x0082C7D0)");
+	// 	return 0;
+	// }, NULL, 0, NULL);
 }
 
 // ============================================================================
@@ -668,6 +1120,8 @@ static void AntiAntiDebug()
 	// RevLog("antidebug: all writes disabled (debug-observe mode)");
 }
 
+
+
 void REVOLTEACSRemap()
 {
 	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, GetCurrentProcessId());
@@ -677,7 +1131,7 @@ void REVOLTEACSRemap()
 		return;
 	}
 
-	AntiAntiDebug();
+	// AntiAntiDebug();
 
 	HANDLE hWatchdog = CreateThread(NULL, 0, XignDispatcherWatchdog, NULL, 0, NULL);
 	if (hWatchdog)
@@ -686,7 +1140,7 @@ void REVOLTEACSRemap()
 		CloseHandle(hWatchdog);
 	}
 
-	REVOLTEACSHook(hProcess);
+	// REVOLTEACSHook(hProcess);
 	CloseHandle(hProcess);
 }
 
@@ -694,8 +1148,25 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 {
 	if (ul_reason_for_call == DLL_PROCESS_ATTACH)
 	{
+		// 1. Process ID'yi alıyoruz
+		DWORD pid = GetCurrentProcessId();
+
+		// 2. Mesajımızı hazırlayacağımız bir buffer oluşturuyoruz
+		char msgBuffer[512];
+		sprintf_s(msgBuffer, sizeof(msgBuffer), 
+			"DLL Enjekte Edildi!\n\n"
+			"Process ID (PID): %lu\n\n"
+			"Şimdi Cheat Engine'i açın, bu PID'ye sahip KnightOnLine.exe'yi seçin\n"
+			"ve Breakpoint'lerinizi kurun.\n"
+			"İşlemler bitince 'Tamam'a tıklayarak devam edin.", 
+			pid);
+
+		// 3. Mesaj kutusunu ekrana basıp süreci bekletiyoruz
+		MessageBoxA(NULL, msgBuffer, "Süreç Bekletiliyor", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+
 		InitConsole();
 		RevLog("REVOLTEACS loaded — PID=%lu", GetCurrentProcessId());
+		// LogLoadedModules("DllMain");
 		REVOLTEACSRemap();
 	}
 	return TRUE;

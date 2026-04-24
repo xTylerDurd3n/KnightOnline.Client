@@ -45,6 +45,25 @@ void GDIHelper::Destroy() {
 
 #include <iostream>
 #include <shlwapi.h>
+#include <tlhelp32.h>
+
+static void LauncherLog(const char* fmt, ...)
+{
+    char msg[1024];
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    int hdr = sprintf_s(msg, sizeof(msg), "[%02d:%02d:%02d.%03d] ",
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg + hdr, sizeof(msg) - hdr - 2, fmt, ap);
+    va_end(ap);
+    strcat_s(msg, sizeof(msg), "\n");
+    FILE* fp = nullptr;
+    fopen_s(&fp, "C:\\LAUNCHER.log", "a");
+    if (fp) { fputs(msg, fp); fflush(fp); fclose(fp); }
+    OutputDebugStringA(msg);
+}
 
 #pragma comment(lib, "shlwapi.lib")
 
@@ -350,54 +369,56 @@ void GDIHelper::run()
             CloseHandle(clientProcessInfo.hProcess);
 #endif
 #if 1
-            // dllPath: her zaman Launcher.exe'nin yanindaki REVOLTEACS.dll
-            char launcherDir[MAX_PATH];
-            GetModuleFileNameA(NULL, launcherDir, MAX_PATH);
-            std::string::size_type lastSlash = std::string(launcherDir).find_last_of("\\/");
-            std::string dllPath = std::string(launcherDir).substr(0, lastSlash + 1) + "REVOLTEACS.dll";
+            // Launcher.exe'nin dizini = game dizini
+            char launcherExePath[MAX_PATH];
+            GetModuleFileNameA(NULL, launcherExePath, MAX_PATH);
+            std::string gameDir = std::string(launcherExePath).substr(0, std::string(launcherExePath).find_last_of("\\/") + 1);
 
-            // DEBUG: DLL path ve varlik kontrolu
-            // {
-            //     BOOL exists = GetFileAttributesA(dllPath.c_str()) != INVALID_FILE_ATTRIBUTES;
-            //     char dbg[512];
-            //     sprintf_s(dbg, "DLL: %s\nExists: %s", dllPath.c_str(), exists ? "YES" : "NO <-- SORUN");
-            //     MessageBoxA(NULL, dbg, "DEBUG", MB_ICONINFORMATION);
-            // }
+            // REVOLTEACS.dll launcher'in yaninda
+            std::string dllPath = gameDir + "REVOLTEACS.dll";
+
+            LauncherLog("=== REVOLTEACS Launcher ===");
+            LauncherLog("gameDir: %s", gameDir.c_str());
+            LauncherLog("dllPath: %s", dllPath.c_str());
+            LauncherLog("DLL exists: %s", (GetFileAttributesA(dllPath.c_str()) != INVALID_FILE_ATTRIBUTES) ? "YES" : "NO");
+
+            // KO.exe'yi kendi launcher PID'imizle baslatiyoruz.
+            // Orijinal akis: xldr KO.exe'yi kendi PID'iyle baslatir.
+            // Biz xldr yerine geciyoruz — KO.exe sadece "o PID hayatta mi?" diye bakar.
+            DWORD myPid = GetCurrentProcessId();
+            std::string koExe = gameDir + "KnightOnLine.exe";
+            char cmdLine[MAX_PATH + 32];
+            sprintf_s(cmdLine, sizeof(cmdLine), "\"%s\" %lu", koExe.c_str(), myPid);
+
+            LauncherLog("koExe: %s", koExe.c_str());
+            LauncherLog("koExe exists: %s", (GetFileAttributesA(koExe.c_str()) != INVALID_FILE_ATTRIBUTES) ? "YES" : "NO");
+            LauncherLog("cmdLine: %s", cmdLine);
 
             STARTUPINFO si = { sizeof(si) };
-            PROCESS_INFORMATION pi;
-
-            /*if (!CreateProcessA(NULL, &commandLine[0], NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {*/
-            std::string executablePath = "KnightOnline.exe";
-            std::string parameters = "E03ED890-8E94-4B42-B1C5-3CDA401AA9C2";
-            std::string commandLine = executablePath + " " + parameters;
-
-            char fullPath[MAX_PATH];
-            GetModuleFileNameA(NULL, fullPath, MAX_PATH);
-            std::string::size_type pos = std::string(fullPath).find_last_of("\\/");
-            std::string startupPath = std::string(fullPath).substr(0, pos + 1) + executablePath;
-
-            // CreateProcessA - process'i SUSPENDED baslat ki Themida unpack stub'i calismadan
-            // DLL inject edebilelim. Aksi halde stub anti-injection kontrollerini aktif eder.
-            if (!CreateProcessA(NULL, const_cast<LPSTR>(commandLine.c_str()), NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi))
+            PROCESS_INFORMATION pi = {};
+            if (!CreateProcessA(NULL, cmdLine, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, gameDir.c_str(), &si, &pi))
             {
-                MessageBoxA(mainWindow, "KnightOnLine.exe not found.", "Launcher", MB_ICONINFORMATION);
+                LauncherLog("CreateProcess FAILED err=%lu", GetLastError());
+                MessageBoxA(mainWindow, "KnightOnLine.exe bulunamadi.", "Launcher", MB_ICONINFORMATION);
                 goto return_true;
             }
+            LauncherLog("KnightOnLine.exe started PID=%lu (suspended)", pi.dwProcessId);
 
-            std::cout << "Process created and suspended. Injecting DLL..." << std::endl;
-
+            LauncherLog("injecting REVOLTEACS.dll...");
             if (!InjectDLL(pi.dwProcessId, dllPath.c_str()))
             {
-                MessageBoxA(mainWindow, xorstr("REVOLTEACS.dll not found."), xorstr("Launcher"), MB_ICONINFORMATION);
+                LauncherLog("InjectDLL FAILED err=%lu", GetLastError());
+                MessageBoxA(mainWindow, xorstr("REVOLTEACS.dll inject edilemedi."), xorstr("Launcher"), MB_ICONINFORMATION);
                 TerminateProcess(pi.hProcess, 0);
                 goto return_true;
             }
+            LauncherLog("DLL injected OK");
 
-            std::cout << "DLL injected. Resuming process..." << std::endl;
+            LauncherLog("resuming KnightOnLine.exe...");
             ResumeThread(pi.hThread);
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
+            LauncherLog("done.");
         return_true:
 #endif
             ::PostQuitMessage(0);

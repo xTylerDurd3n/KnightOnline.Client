@@ -54,4 +54,7 @@ private:
 
     // Son return address kaydi
     static DWORD s_lastReturnAddress;
+
+    // Version spoof: client'in gonderdigi versiyonu yakala, server'dan geleni spoof et
+    static uint16_t s_clientVersion;
 };

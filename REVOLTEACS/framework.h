@@ -25,6 +25,23 @@
 #define KO_RECV_FNC         0x0082C7D0      // Game server recv handler (push ebp prolog, dogrulanmis)
 
 // =============================================================================
+// XIGNCODE SDK SLOTS (DOGRULANMIS - 25xx, IDA dump analizi)
+// =============================================================================
+// Bu adresler Virtual Address (VA) — offset degil.
+// Oyun 0x00400000 base adresine yukleniyor, ASLR YOK (Themida 32-bit, sabit base).
+// Her versiyonda ayni adrese yuklenir — hardcoded VA kullanimi guvenli.
+//
+// Slot'lar .rdata bolgesinde — XIGNCODE SDK init sirasinda gercek fn adresini yazar.
+// Watchdog bu slot'larin gosterdigi fonksiyonlari hook'luyor (Detour), slot degeri degismez.
+// =============================================================================
+#define XIGN_SLOT_DISPATCHER    0x00F661D0  // dword_F661D0 — ana SDK dispatcher, 21 xref
+                                            // __stdcall 1 arg (0x0050BAA9 call site'indan dogrulanmis)
+                                            // dump degerinde: 0x7624E370 (xldr.dll / XignCode.dll icinde)
+#define XIGN_SLOT_TBL_VALIDATE  0x00F6654C  // dword_F6654C — TBL integrity validation
+                                            // "Invalid Data Table" hatasini ureten slot
+                                            // calling convention: belirsiz, ayri hook ile bypass ediliyor
+
+// =============================================================================
 // GAME FUNCTIONS (dogrulanacak - 25xx)
 // =============================================================================
 const DWORD KO_CALL_END_GAME           = 0x0079A5D0;
