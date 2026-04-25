@@ -414,6 +414,9 @@ void GDIHelper::run()
             }
             LauncherLog("DLL injected OK");
 
+            LauncherLog("*** DEBUGGER ATTACH WINDOW: PID=%lu (suspended, 30s) ***", pi.dwProcessId);
+            // Sleep(30000);
+
             LauncherLog("resuming KnightOnLine.exe...");
             ResumeThread(pi.hThread);
             CloseHandle(pi.hThread);

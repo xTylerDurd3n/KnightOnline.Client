@@ -37,9 +37,6 @@
 #define XIGN_SLOT_DISPATCHER    0x00F661D0  // dword_F661D0 — ana SDK dispatcher, 21 xref
                                             // __stdcall 1 arg (0x0050BAA9 call site'indan dogrulanmis)
                                             // dump degerinde: 0x7624E370 (xldr.dll / XignCode.dll icinde)
-#define XIGN_SLOT_TBL_VALIDATE  0x00F6654C  // dword_F6654C — TBL integrity validation
-                                            // "Invalid Data Table" hatasini ureten slot
-                                            // calling convention: belirsiz, ayri hook ile bypass ediliyor
 
 // =============================================================================
 // GAME FUNCTIONS (dogrulanacak - 25xx)

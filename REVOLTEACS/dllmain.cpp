@@ -257,28 +257,17 @@ static void WritePatch(DWORD addr, const BYTE *bytes, SIZE_T len,
 // ============================================================================
 static void ApplyPatches()
 {
-	// Patch 1: 0x00E73CD5 JMP dispatcher skip — adres dogrulanmadi, devre disi
-	// BYTE patch1_success[] = {0xE9, 0x46, 0x00, 0x00, 0x00};
-	// WritePatch(0x00E73CD5, patch1_success, sizeof(patch1_success));
-
-	// Patch 2: XIGNCODE CRC32 scanner bypass
-	// sub_510F30 CRC32 hesapliyor, 0x005753C1'de sabit degerle karsilastiriyor.
-	// jnz NOP → sonuc ne olursa XIGNCODE scanner her zaman "OK" doner.
-	// Bu patch aktifken DetourFunction hook'lari tespit edilemez.
+	// Patch 2: XIGNCODE CRC32 scanner bypass — jnz NOP, scanner her zaman "OK" doner
 	BYTE patch2[] = {0x90, 0x90};
 	WritePatch(0x005753C6, patch2, sizeof(patch2));
-
-	// Patch 3: kaldirildi (sub_459B24 lazy init, heartbeat degil)
-
-	// Patch 4: 0x00E11900 entry kill — adres dogrulanmadi, devre disi
-	// BYTE retKill[] = {0xC3};
-	// WritePatch(0x00E11900, retKill, sizeof(retKill));
-
-	// Patch 5: 0x00E11C8A 6-byte NOP — adres dogrulanmadi, devre disi
-	// BYTE nopCall[] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
-	// WritePatch(0x00E11C8A, nopCall, sizeof(nopCall));
-
 	RevLog("xigncode: Patch 2 (CRC scanner NOP @ 0x005753C6) aktif");
+
+	// Patch 7: xign_init_sub_50A400 entry → JMP loc_50A673 (xor eax,eax; retn 8)
+	// Offset: 0x50A673 - (0x50A400 + 5) = 0x26E
+	BYTE patch7_expected[] = { 0x83, 0xEC, 0x5C, 0x8B, 0x44 };
+	BYTE patch7[] = { 0xE9, 0x6E, 0x02, 0x00, 0x00 };
+	WritePatch(0x0050A400, patch7, sizeof(patch7), patch7_expected, sizeof(patch7_expected));
+	RevLog("xigncode: Patch 7 (JMP @ xign_init_sub_50A400 -> loc_50A673) aktif");
 }
 
 // ============================================================================
@@ -375,7 +364,14 @@ DWORD WINAPI XignDispatcherWatchdog(LPVOID)
 				// --- E) GAME HOOKS ---
 				g_GameHooks.InitAllHooks(GetCurrentProcess());
 
-				// --- E) SEND/RECV HOOK — devre disi ---
+				// --- F) PACKET HOOKS — aktif etmek icin yorumu kaldir ---
+				// CreateThread(NULL, 0, [](LPVOID) -> DWORD {
+				// 	Sleep(5000);
+				// 	g_PacketHandler.InitSendHook();
+				// 	g_PacketHandler.InitRecvHook();
+				// 	RevLog("hook: Send/Recv aktif (SND=0x%08X RECV=0x%08X)", KO_SND_FNC, KO_RECV_FNC);
+				// 	return 0;
+				// }, NULL, 0, NULL);
 
 				BYTE check[6];
 				memcpy(check, (void *)0x00459B64, 6);
@@ -1150,19 +1146,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 	{
 		// 1. Process ID'yi alıyoruz
 		DWORD pid = GetCurrentProcessId();
-
-		// 2. Mesajımızı hazırlayacağımız bir buffer oluşturuyoruz
-		char msgBuffer[512];
-		sprintf_s(msgBuffer, sizeof(msgBuffer), 
-			"DLL Enjekte Edildi!\n\n"
-			"Process ID (PID): %lu\n\n"
-			"Şimdi Cheat Engine'i açın, bu PID'ye sahip KnightOnLine.exe'yi seçin\n"
-			"ve Breakpoint'lerinizi kurun.\n"
-			"İşlemler bitince 'Tamam'a tıklayarak devam edin.", 
-			pid);
-
-		// 3. Mesaj kutusunu ekrana basıp süreci bekletiyoruz
-		MessageBoxA(NULL, msgBuffer, "Süreç Bekletiliyor", MB_OK | MB_ICONWARNING | MB_TOPMOST);
 
 		InitConsole();
 		RevLog("REVOLTEACS loaded — PID=%lu", GetCurrentProcessId());
