@@ -22,39 +22,44 @@ PacketHandler::~PacketHandler()
     g_pPacketHandler = nullptr;
 }
 
+static bool VerifyHookTarget(DWORD addr, const char* name)
+{
+    if (addr == 0 || IsBadCodePtr((FARPROC)addr))
+    {
+        RevLog("hook: %s SKIP — adres gecersiz (0x%08X)", name, addr);
+        return false;
+    }
+    BYTE b[4];
+    memcpy(b, (void*)addr, 4);
+    RevLog("hook: %s @ 0x%08X bytes=[%02X %02X %02X %02X]", name, addr, b[0], b[1], b[2], b[3]);
+    // Gecerli fonksiyon prologu: push ebp (55), sub esp (83 EC), mov edi edi (8B FF), push edi (57)
+    bool valid = (b[0] == 0x55 || b[0] == 0x83 || b[0] == 0x8B || b[0] == 0x57 || b[0] == 0x56 || b[0] == 0x53);
+    if (!valid)
+        RevLog("hook: %s UYARI — beklenmedik prologue, adres yanlis olabilir", name);
+    return true;
+}
+
 void PacketHandler::InitSendHook()
 {
     g_pPacketHandler = this;
-
+    if (!VerifyHookTarget(KO_SND_FNC, "Send"))
+        return;
     s_oSend = (tSend)DetourFunction((PBYTE)KO_SND_FNC, (PBYTE)hkSend);
-
-    if (s_oSend)
-    {
-    }
-    else
-    {
-    }
+    RevLog("hook: Send %s trampoline=%p", s_oSend ? "OK" : "FAILED", s_oSend);
 }
 
 void PacketHandler::InitRecvHook()
 {
     g_pPacketHandler = this;
-
     if (KO_RECV_FNC == 0)
     {
+        RevLog("hook: Recv SKIP (KO_RECV_FNC=0)");
         return;
     }
-
-    // Game server recv handler - SEH prolog fonksiyon
-    // __thiscall degil, DetourFunction ile hook'la
+    if (!VerifyHookTarget(KO_RECV_FNC, "Recv"))
+        return;
     s_oRecv = (tRecv)DetourFunction((PBYTE)KO_RECV_FNC, (PBYTE)hkRecv);
-
-    if (s_oRecv)
-    {
-    }
-    else
-    {
-    }
+    RevLog("hook: Recv %s trampoline=%p", s_oRecv ? "OK" : "FAILED", s_oRecv);
 }
 
 void PacketHandler::Send(Packet* pkt)
@@ -84,14 +89,7 @@ void PacketHandler::Send(Packet* pkt)
 
 int __fastcall PacketHandler::hkSend(DWORD thisPtr, DWORD edx, BYTE* pBuf, int iLen)
 {
-    // Return address kaydet
-    DWORD retAddr = 0;
-    __asm
-    {
-        mov eax, [ebp + 4]
-        mov retAddr, eax
-    }
-    s_lastReturnAddress = retAddr;
+    s_lastReturnAddress = (DWORD)(uintptr_t)_ReturnAddress();
 
     if (pBuf && iLen > 0)
     {

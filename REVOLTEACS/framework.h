@@ -21,8 +21,8 @@
 // =============================================================================
 // CORE FUNCTIONS (DOGRULANMIS - 25xx)
 // =============================================================================
-#define KO_SND_FNC          0x006FC190      // Send Packet Function
-#define KO_RECV_FNC         0x0082C7D0      // Game server recv handler (push ebp prolog, dogrulanmis)
+#define KO_SND_FNC          0x0061EA00      // Send Packet Function
+#define KO_RECV_FNC         0x00000000      // TODO: yeni client adresi bulunmadi, gecici devre disi
 
 // =============================================================================
 // XIGNCODE SDK SLOTS (DOGRULANMIS - 25xx, IDA dump analizi)

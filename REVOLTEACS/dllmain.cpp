@@ -183,6 +183,7 @@ static void REVOLTEACSRemapProcess(HANDLE hProcess)
 
 
 static void HookNtQSI();
+static void HookWinSock();
 
 // ============================================================================
 // ============================================================================
@@ -257,11 +258,6 @@ static void WritePatch(DWORD addr, const BYTE *bytes, SIZE_T len,
 // ============================================================================
 static void ApplyPatches()
 {
-	// Patch 2: XIGNCODE CRC32 scanner bypass — jnz NOP, scanner her zaman "OK" doner
-	BYTE patch2[] = {0x90, 0x90};
-	WritePatch(0x005753C6, patch2, sizeof(patch2));
-	RevLog("xigncode: Patch 2 (CRC scanner NOP @ 0x005753C6) aktif");
-
 	// Patch 7: xign_init_sub_50A400 entry → JMP loc_50A673 (xor eax,eax; retn 8)
 	// Offset: 0x50A673 - (0x50A400 + 5) = 0x26E
 	BYTE patch7_expected[] = { 0x83, 0xEC, 0x5C, 0x8B, 0x44 };
@@ -312,6 +308,17 @@ static int __stdcall hkXignCheck(DWORD arg)
 	return 1;
 }
 
+static DWORD WINAPI PacketHookThread(LPVOID)
+{
+	RevLog("PacketHookThread: basliyor, 5sn bekleniyor...");
+	Sleep(5000);
+	RevLog("PacketHookThread: hook kuruluyor...");
+	g_PacketHandler.InitSendHook();
+	g_PacketHandler.InitRecvHook();
+	RevLog("PacketHookThread: tamamlandi");
+	return 0;
+}
+
 DWORD WINAPI XignDispatcherWatchdog(LPVOID)
 {
 	RevLog("watchdog: started, waiting for F661D0 slot (Unpack Event)...");
@@ -350,28 +357,20 @@ DWORD WINAPI XignDispatcherWatchdog(LPVOID)
 				// 	RevLog("watchdog: OpenProcess failed for remap (err=%lu)", GetLastError());
 				// }
 
-				// --- B) DETOUR HOOK: F661D0 (ana dispatcher) ---
-				oXignCheck = (tXignCheck)DetourFunction((PBYTE)curFuncAddr, (PBYTE)hkXignCheck);
-				RevLog("hook: F661D0 dispatcher @ %p -> hkXignCheck, trampoline=%p", curFuncAddr, oXignCheck);
+				// --- B) DETOUR HOOK: F661D0 (ana dispatcher) — devre disi ---
+				// oXignCheck = (tXignCheck)DetourFunction((PBYTE)curFuncAddr, (PBYTE)hkXignCheck);
+				// RevLog("hook: F661D0 dispatcher @ %p -> hkXignCheck, trampoline=%p", curFuncAddr, oXignCheck);
 
 				// --- C) XIGNCODE PATCH ---
 				ApplyPatches();
 				patchesApplied = true;
 
-				// --- D) HANDLE SCAN GİZLEME ---
-				HookNtQSI();
 
 				// --- E) GAME HOOKS ---
 				g_GameHooks.InitAllHooks(GetCurrentProcess());
 
-				// --- F) PACKET HOOKS — aktif etmek icin yorumu kaldir ---
-				// CreateThread(NULL, 0, [](LPVOID) -> DWORD {
-				// 	Sleep(5000);
-				// 	g_PacketHandler.InitSendHook();
-				// 	g_PacketHandler.InitRecvHook();
-				// 	RevLog("hook: Send/Recv aktif (SND=0x%08X RECV=0x%08X)", KO_SND_FNC, KO_RECV_FNC);
-				// 	return 0;
-				// }, NULL, 0, NULL);
+				// --- F) PACKET HOOKS — 5sn gecikme, login/connect bekleniyor ---
+				CreateThread(NULL, 0, PacketHookThread, NULL, 0, NULL);
 
 				BYTE check[6];
 				memcpy(check, (void *)0x00459B64, 6);
@@ -647,6 +646,68 @@ static void HookShellExecute()
 	if (oShellExExA) oShellExExA = (tShellExExA)DetourFunction((PBYTE)oShellExExA, (PBYTE)hkShellExExA);
 	if (oShellExExW) oShellExExW = (tShellExExW)DetourFunction((PBYTE)oShellExExW, (PBYTE)hkShellExExW);
 	RevLog("hook: ShellExecuteA/W + ShellExecuteExA/W hooked (log only)");
+}
+
+// ============================================================================
+// WinSock send/recv hook — gercek network trafikini yakala
+// ws2_32.dll seviyesinde, XIGNCODE code integrity'den etkilenmez
+// ============================================================================
+typedef int (WSAAPI *tWsSend)(SOCKET, const char*, int, int);
+typedef int (WSAAPI *tWsRecv)(SOCKET, char*, int, int);
+
+static tWsSend oWsSend = nullptr;
+static tWsRecv oWsRecv = nullptr;
+
+static int WSAAPI hkWsSend(SOCKET s, const char* buf, int len, int flags)
+{
+	if (buf && len > 0)
+	{
+		// KO paket formati: [55 AA] [size 2B] [data...] [AA 55]
+		// data[0] = opcode
+		uint8_t b0 = (uint8_t)buf[0];
+		uint8_t b1 = len > 1 ? (uint8_t)buf[1] : 0;
+		uint8_t opcode = len > 4 ? (uint8_t)buf[4] : 0;
+
+		char hex[64] = {};
+		int dump = len < 16 ? len : 16;
+		for (int i = 0; i < dump; i++)
+			sprintf(hex + i * 3, "%02X ", (uint8_t)buf[i]);
+
+		if (b0 == 0x55 && b1 == 0xAA)
+			RevLog("WS_SEND socket=%llu op=0x%02X len=%d [%s]", (uint64_t)s, opcode, len, hex);
+		else
+			RevLog("WS_SEND_RAW socket=%llu len=%d [%s]", (uint64_t)s, len, hex);
+	}
+	return oWsSend(s, buf, len, flags);
+}
+
+static int WSAAPI hkWsRecv(SOCKET s, char* buf, int len, int flags)
+{
+	int result = oWsRecv(s, buf, len, flags);
+	if (result > 0 && buf)
+	{
+		char hex[64] = {};
+		int dump = result < 16 ? result : 16;
+		for (int i = 0; i < dump; i++)
+			sprintf(hex + i * 3, "%02X ", (uint8_t)buf[i]);
+		RevLog("WS_RECV socket=%llu len=%d [%s]", (uint64_t)s, result, hex);
+	}
+	return result;
+}
+
+static void HookWinSock()
+{
+	HMODULE hWs2 = GetModuleHandleA("ws2_32.dll");
+	if (!hWs2) hWs2 = LoadLibraryA("ws2_32.dll");
+	if (!hWs2) { RevLog("WinSock hook: ws2_32.dll bulunamadi"); return; }
+
+	oWsSend = (tWsSend)GetProcAddress(hWs2, "send");
+	oWsRecv = (tWsRecv)GetProcAddress(hWs2, "recv");
+
+	if (oWsSend) oWsSend = (tWsSend)DetourFunction((PBYTE)oWsSend, (PBYTE)hkWsSend);
+	if (oWsRecv) oWsRecv = (tWsRecv)DetourFunction((PBYTE)oWsRecv, (PBYTE)hkWsRecv);
+
+	RevLog("hook: ws2_32 send/recv hooked (send=%p recv=%p)", oWsSend, oWsRecv);
 }
 
 static void HookCreateWindow()
